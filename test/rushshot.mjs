@@ -1,0 +1,10 @@
+import { chromium } from 'playwright-core';
+const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+await page.goto('http://localhost:5173/?lite=1&t=900', { waitUntil: 'load' });
+await page.waitForFunction(() => (window.__frames ?? 0) > 10, null, { timeout: 120000 });
+await page.evaluate(() => { const s = window.sim; s.triggerRush(); for (let i = 0; i < 20 * 150; i++) s.tick(); });
+await page.waitForTimeout(1500);
+await page.screenshot({ path: '/tmp/s17.png' });
+console.log(await page.evaluate(() => JSON.stringify({ rush: window.sim.rushActive, ...window.sim.snapshot().workers, backlog: window.sim.snapshot().backlog })));
+await browser.close();

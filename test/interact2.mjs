@@ -1,0 +1,21 @@
+import { chromium } from 'playwright-core';
+const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-precise-memory-info'] });
+const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
+const errors = [];
+page.on('console', m => { if ((m.type() === 'error' || m.type() === 'warning') && !m.text().includes('GL Driver')) errors.push(`[${m.type()}] ${m.text()}`); });
+page.on('pageerror', e => errors.push(`[pageerror] ${e.message}`));
+await page.goto('http://localhost:5173/?lite=1&t=60', { waitUntil: 'load' });
+await page.waitForFunction(() => (window.__frames ?? 0) > 10, null, { timeout: 120000 });
+await page.click('[data-act="hire"]'); await page.click('[data-act="hire"]'); await page.click('[data-act="rush"]'); await page.click('[data-act="truck"]');
+await page.waitForTimeout(500);
+console.log('workers:', await page.evaluate(() => window.sim.workers.length), 'rush:', await page.evaluate(() => window.sim.rushActive), 'log tail:', await page.evaluate(() => window.sim.log.slice(-3).map(l => l.text)));
+// run 4x for a while and sample heap
+await page.click('[data-speed="4"]');
+const mem0 = await page.evaluate(() => performance.memory?.usedJSHeapSize);
+await page.waitForTimeout(15000);
+const mem1 = await page.evaluate(() => performance.memory?.usedJSHeapSize);
+console.log('heap MB', (mem0 / 1e6).toFixed(1), '->', (mem1 / 1e6).toFixed(1), 'sim time', await page.evaluate(() => window.sim.time.toFixed(0)), 'frames', await page.evaluate(() => window.__frames));
+console.log('renderer info:', await page.evaluate(() => { const r = window.__renderer; return r ? { geometries: r.info.memory.geometries, textures: r.info.memory.textures, calls: r.info.render.calls, triangles: r.info.render.triangles } : 'n/a'; }));
+console.log('invariants:', await page.evaluate(() => window.sim.checkInvariants()));
+console.log('errors:', errors.slice(0, 8));
+await browser.close();
