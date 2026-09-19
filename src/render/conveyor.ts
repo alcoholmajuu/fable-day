@@ -21,6 +21,7 @@ export class ConveyorRenderer {
   private ledGreen = std(0x3faa5c, { emissive: 0x2fd66a, emissiveIntensity: 1.2, roughness: 0.4 });
   private ledRed = std(0xd9403a, { emissive: 0xff3b3b, emissiveIntensity: 1.4, roughness: 0.4 });
   private ledAmber = std(0xe0b23a, { emissive: 0xffb020, emissiveIntensity: 1.2, roughness: 0.4 });
+  private spin = new THREE.Quaternion();
   private tmp = { x: 0, z: 0, ang: 0 }; private m4 = new THREE.Matrix4(); private q = new THREE.Quaternion(); private v = new THREE.Vector3(); private sc = new THREE.Vector3(1, 1, 1);
 
   constructor(readonly sim: Simulation, scene: THREE.Scene) {
@@ -108,11 +109,11 @@ export class ConveyorRenderer {
     // rollers spin on running segments (visual speed follows sim speed; frozen when paused)
     if (simDt > 0) {
       this.rollerAngle += simDt * 6;
+      this.spin.setFromAxisAngle(X_AXIS, simDt * 6);
       for (let i = 0; i < this.rollerSeg.length; i++) {
         const seg = this.rollerSeg[i]; if (seg.status === 'BLOCKED' && seg.kind !== 'lane') continue;
         this.rollers.getMatrixAt(i, this.m4); this.m4.decompose(this.v, this.q, this.sc);
-        const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), simDt * 6);
-        this.q.multiply(spin); this.m4.compose(this.v, this.q, this.sc); this.rollers.setMatrixAt(i, this.m4);
+        this.q.multiply(this.spin); this.m4.compose(this.v, this.q, this.sc); this.rollers.setMatrixAt(i, this.m4);
       }
       this.rollers.instanceMatrix.needsUpdate = true;
     }
@@ -132,3 +133,4 @@ export class ConveyorRenderer {
   }
 }
 const UP = new THREE.Vector3(0, 1, 0);
+const X_AXIS = new THREE.Vector3(1, 0, 0);
