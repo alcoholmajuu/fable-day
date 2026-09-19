@@ -26,6 +26,7 @@ for (let i = 0; i < steps; i++) {
 const s = sim.snapshot();
 console.log('--- final ---');
 console.log(JSON.stringify({ time: sim.time, shipped: sim.metrics.ordersShipped, created: sim.metrics.ordersCreated, dropped: sim.metrics.ordersDropped, backlog: s.backlog, palletsReceived: sim.metrics.palletsReceived, unitsPicked: sim.metrics.unitsPicked, failed: sim.metrics.jobsFailed, replans: sim.metrics.replans, avgCycle: s.avgCycleTime.toFixed(0), inventory: s.inventory, violations, wall_ms: Date.now() - t0 }, null, 1));
+const cv = sim.conveyor; console.log('conveyor: inducted', sim.metrics.cartonsInducted, 'misroutes', cv.misroutes, 'lane passed', cv.lanes.map(l => l.passed).join('/'), 'main blocked%', (cv.segments.get('MAIN')!.blockedTime / sim.time * 100).toFixed(1), 'induction blocked s', cv.inductions.map(i => i.blockedTime.toFixed(0)).join('/'));
 console.log('backorder events:', sim.log.filter(l => l.text.includes('backorder')).length, 'trucks in/out:', sim.metrics.trucksIn, sim.metrics.trucksOut, 'rush periods:', sim.log.filter(l => l.text.includes('Rush period started')).length);
 const warns = sim.log.filter(l => l.kind === 'warn' && !l.text.includes('backorder') && !l.text.includes('Rush'));
 console.log('warnings:', warns.length); for (const w of warns.slice(0, 15)) console.log('  ', w.t.toFixed(0), w.text);

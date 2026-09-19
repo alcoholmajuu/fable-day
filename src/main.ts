@@ -3,6 +3,7 @@ import { Simulation } from './sim/sim';
 import { SceneHost, OX, OZ } from './render/scene';
 import { buildWarehouse } from './render/warehouse';
 import { DynamicRenderer } from './render/dynamic';
+import { ConveyorRenderer } from './render/conveyor';
 import { HUD, type Selection } from './ui/hud';
 import { RACK_BASE, LEVEL_H } from './render/warehouse';
 import { RACK_LEVELS } from './sim/layout';
@@ -14,6 +15,7 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
 const host = new SceneHost(canvas);
 const statics = buildWarehouse(sim.layout, host.scene);
 const dyn = new DynamicRenderer(sim, host.scene);
+const conv = new ConveyorRenderer(sim, host.scene);
 const hud = new HUD(sim, document.getElementById('ui')!);
 (window as any).sim = sim; (window as any).__renderer = host.renderer; // for debugging in the console
 
@@ -36,11 +38,12 @@ hud.onToggleLabels = () => { dyn.labelsVisible = !dyn.labelsVisible; };
 const raycaster = new THREE.Raycaster();
 function pick(x: number, y: number): Selection {
   host.ray(x, y, raycaster);
-  const hits = raycaster.intersectObjects([...dyn.workerHits, statics.rackCells, ...statics.spotBoxes, ...statics.stationBoxes, ...dyn.truckHits], false);
+  const hits = raycaster.intersectObjects([...dyn.workerHits, statics.rackCells, ...statics.spotBoxes, ...statics.stationBoxes, ...dyn.truckHits, ...conv.hits], false);
   if (!hits.length) return null;
   const h = hits[0]; const o = h.object as THREE.Mesh;
   if (o.userData.workerId) return { kind: 'worker', id: o.userData.workerId };
   if (o.userData.truckId) return { kind: 'truck', id: o.userData.truckId };
+  if (o.userData.conveyorId) return { kind: 'conveyor', id: o.userData.conveyorId };
   if (o.userData.spotId) return { kind: 'spot', id: o.userData.spotId };
   if (o.userData.stationId) return { kind: 'station', id: o.userData.stationId };
   if (o === statics.rackCells && h.instanceId !== undefined) {
@@ -68,6 +71,7 @@ function describe(s: NonNullable<Selection>): string {
   if (s.kind === 'rack') { const l = sim.racks.get(s.id)!; const sku = l.skuId ? sim.skus.get(l.skuId) : null; return `${l.id} · ${sku ? `${l.qty}× ${sku.name}${l.reserved ? ` (${l.reserved} reserved)` : ''}` : 'empty slot'}`; }
   if (s.kind === 'spot') { const sp = sim.spots.get(s.id)!; return `${sp.id} · ${sp.containerIds.length}/${sp.capacity} ${sp.kind.replace('_', ' ')}`; }
   if (s.kind === 'station') { const st = sim.stations.get(s.id)!; return `${st.kind === 'pack' ? 'Packing' : 'Inspection'} station · ${st.busyWorkerId ? sim.worker(st.busyWorkerId).name + ' working' : 'free'}`; }
+  if (s.kind === 'conveyor') { const seg = sim.conveyor.segments.get(s.id)!; return `${seg.name} · ${seg.status} · ${seg.cartons.length} carton${seg.cartons.length === 1 ? '' : 's'}${seg.blockedBy ? ' · ' + seg.blockedBy : ''}`; }
   if (s.kind === 'truck') { const t = sim.trucks.get(s.id)!; return `${t.kind} truck ${t.id} · ${t.state} · ${t.containerIds.length}${t.kind === 'outbound' ? '/' + t.capacity + ' cartons' : ' pallets'}`; }
   return '';
 }
@@ -88,7 +92,8 @@ function frame(now: number) {
   host.pollKeys(real);
   host.update(real);
   dyn.zoomLevel = host.zoom;
-  dyn.update(real * Math.max(0.0001, hud.effectiveSpeed) + (hud.effectiveSpeed === 0 ? 0 : 0), selection);
+  dyn.update(real * Math.max(0.0001, hud.effectiveSpeed), selection);
+  conv.update(real, real * hud.effectiveSpeed);
   hud.update();
   host.render();
   frames++; (window as any).__frames = ((window as any).__frames ?? 0) + 1; fpsT += real; if (fpsT >= 0.5) { hud.setFps(frames / fpsT); frames = 0; fpsT = 0; }

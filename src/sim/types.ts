@@ -25,7 +25,7 @@ export interface RackLocation {
   aisle: string;
 }
 
-export type SpotKind = 'receiving' | 'inspect_bench' | 'inspect_out' | 'tote_shelf' | 'pack_in' | 'pack_bench' | 'pack_out' | 'staging';
+export type SpotKind = 'receiving' | 'inspect_bench' | 'inspect_out' | 'tote_shelf' | 'pack_in' | 'pack_bench' | 'pack_out';
 
 /** A floor/bench spot that holds containers (pallets, totes, cartons). */
 export interface Spot {
@@ -52,10 +52,14 @@ export interface Container {
   inspected: boolean;        // pallets: passed inspection
   reservedBy: string | null; // job id that has claimed this container
   createdAt: number;
+  convSeg: string | null;    // conveyor segment id when riding the conveyor
+  convPos: number;           // distance along that segment
+  convDest: string | null;   // lane id assigned by the scanner
+  scannedAt: number | null;
 }
 
-export type OrderState = 'NEW' | 'BACKORDER' | 'ALLOCATED' | 'PICKING' | 'PICKED' | 'PACKING' | 'PACKED' | 'STAGED' | 'LOADING' | 'SHIPPED';
-export const ORDER_STATES: OrderState[] = ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'STAGED', 'LOADING', 'SHIPPED'];
+export type OrderState = 'NEW' | 'BACKORDER' | 'ALLOCATED' | 'PICKING' | 'PICKED' | 'PACKING' | 'PACKED' | 'SORTING' | 'STAGED' | 'LOADING' | 'SHIPPED';
+export const ORDER_STATES: OrderState[] = ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'SORTING', 'STAGED', 'LOADING', 'SHIPPED'];
 export interface OrderLine extends Line { picked: number; fromLocations: { locId: string; qty: number }[] }
 export interface Order {
   id: string;
@@ -69,6 +73,7 @@ export interface Order {
   cartonId: string | null;
   jobId: string | null;
   rush: boolean;
+  dockId: string;            // outbound dock (carrier route) this order ships from
 }
 
 export type JobType = 'UNLOAD' | 'INSPECT' | 'PUTAWAY' | 'PICK' | 'PACK' | 'LOAD' | 'TOTE_RETURN';
@@ -78,7 +83,8 @@ export type JobState = 'open' | 'active' | 'done' | 'failed';
 export type Step =
   | { kind: 'goto'; cell: Cell; label: string; face?: Cell }
   | { kind: 'work'; duration: number; label: string; then?: () => boolean | void }
-  | { kind: 'act'; label: string; fn: () => boolean | void };
+  | { kind: 'act'; label: string; fn: () => boolean | void }
+  | { kind: 'wait'; label: string; until: () => boolean };
 
 export interface Job {
   id: string;
@@ -93,7 +99,7 @@ export interface Job {
   /** Human-readable target, e.g. "Order #12" or "Pallet P3 -> A2-07-2". */
   summary: string;
   /** Ids related to the job for inspection/highlighting. */
-  refs: { orderId?: string; containerId?: string; locationIds?: string[]; spotIds?: string[]; truckId?: string; stationId?: string };
+  refs: { orderId?: string; containerId?: string; locationIds?: string[]; spotIds?: string[]; truckId?: string; stationId?: string; conveyorId?: string };
   /** Check the job can start/continue. Returning false abandons it. */
   validate: () => boolean;
   /** Undo reservations etc. when abandoned. Called at most once. */
@@ -125,6 +131,7 @@ export interface Worker {
   workTotal: number;
   workLabel: string;
   stuckTimer: number;
+  waitTimer: number;         // time spent in a deliberate 'wait' step (blocked conveyor)
   lastProgressDist: number;
   lateral: number;           // small lane offset so workers don't overlap
   speed: number;
@@ -161,6 +168,8 @@ export interface Station {
   accessCell: Cell;
   busyWorkerId: string | null;
   spotIds: { in?: string; bench?: string; out?: string };
+  inductionId?: string;      // pack stations: conveyor induction segment
+  inductionAccess?: Cell;
   processed: number;
 }
 

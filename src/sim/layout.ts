@@ -8,6 +8,13 @@ export const LOC_CAPACITY = 16;
 export const RACK_Z_RANGES: [number, number][] = [[4, 14], [17, 27]];
 /** Rack column pairs: [aisle-west rack x, aisle-east rack x]. Racks at x face outward to their neighbouring aisle. */
 export const RACK_COLUMNS = [12, 13, 16, 17, 20, 21, 24, 25, 28, 29];
+/** Pack station origins (z), main conveyor extent and sortation lane rows. */
+export const PACK_Z0 = [4, 10, 16];
+export const MAIN_Z0 = 4, MAIN_Z1 = 28;
+export const LANE_Z = [22, 24, 26, 28];
+export const SCANNER_Z = 20;
+/** Which dock each lane row serves. */
+export const LANE_DOCK: Record<number, string> = { 22: 'DOCK-OUT-1', 24: 'DOCK-OUT-1', 26: 'DOCK-OUT-2', 28: 'DOCK-OUT-2' };
 
 export interface Layout {
   grid: Grid;
@@ -32,8 +39,8 @@ export function buildLayout(): Layout {
     { id: 'storage', name: 'STORAGE', x0: 10, z0: 2, x1: 32, z1: 30, color: 0x8a9099 },
     { id: 'picking', name: 'PICKING', x0: 32, z0: 2, x1: 35, z1: 30, color: 0x5cb870 },
     { id: 'packing', name: 'PACKING', x0: 35, z0: 2, x1: 39, z1: 30, color: 0xe8813a },
-    { id: 'staging', name: 'STAGING', x0: 39, z0: 2, x1: 42, z1: 30, color: 0x9c6ad6 },
-    { id: 'shipping', name: 'SHIPPING', x0: 42, z0: 2, x1: 45, z1: 30, color: 0x3fb8c4 },
+    { id: 'staging', name: 'SORTATION', x0: 39, z0: 2, x1: 43, z1: 30, color: 0x9c6ad6 },
+    { id: 'shipping', name: 'SHIPPING', x0: 43, z0: 2, x1: 45, z1: 30, color: 0x3fb8c4 },
   ];
 
   // Outer margins (z=0,1 and z=30,31) are walls / not walkable.
@@ -84,26 +91,25 @@ export function buildLayout(): Layout {
     grid.block(33, z);
     addSpot({ id: `TOTE-${z}`, kind: 'tote_shelf', cell: { cx: 33, cz: z }, accessCell: { cx: 32, cz: z }, capacity: 8, stationId: null });
   }
-  // Packing stations: in-buffer (37,z0) ; bench (37,z0+1),(37,z0+2) ; out (empty totes) (37,z0+3). Access from x=36.
-  for (const z0 of [5, 12, 19]) {
+  // Packing stations: in-buffer (37,z0) ; bench (37,z0+1) ; induction conveyor (37,z0+2),(38,z0+2) ; out (empty totes) (37,z0+3). Access from x=36.
+  for (const z0 of PACK_Z0) {
     const id = `PACK-${z0}`;
     for (let k = 0; k < 4; k++) grid.block(37, z0 + k);
+    grid.block(38, z0 + 2);
     const inS = addSpot({ id: `${id}-in`, kind: 'pack_in', cell: { cx: 37, cz: z0 }, accessCell: { cx: 36, cz: z0 }, capacity: 3, stationId: id });
     const bench = addSpot({ id: `${id}-bench`, kind: 'pack_bench', cell: { cx: 37, cz: z0 + 1 }, accessCell: { cx: 36, cz: z0 + 1 }, capacity: 1, stationId: id });
     const out = addSpot({ id: `${id}-out`, kind: 'pack_out', cell: { cx: 37, cz: z0 + 3 }, accessCell: { cx: 36, cz: z0 + 3 }, capacity: 4, stationId: id });
-    stations.push({ id, kind: 'pack', cells: [{ cx: 37, cz: z0 + 1 }, { cx: 37, cz: z0 + 2 }], accessCell: { cx: 36, cz: z0 + 1 }, busyWorkerId: null, spotIds: { in: inS.id, bench: bench.id, out: out.id }, processed: 0 });
+    stations.push({ id, kind: 'pack', cells: [{ cx: 37, cz: z0 + 1 }], accessCell: { cx: 36, cz: z0 + 1 }, busyWorkerId: null, spotIds: { in: inS.id, bench: bench.id, out: out.id }, processed: 0, inductionId: `IND-${z0}`, inductionAccess: { cx: 36, cz: z0 + 2 } });
   }
-  // Staging lanes x=40 accessed from x=39
-  for (let z = 4; z <= 28; z += 2) {
-    grid.block(40, z);
-    addSpot({ id: `STG-${z}`, kind: 'staging', cell: { cx: 40, cz: z }, accessCell: { cx: 39, cz: z }, capacity: 3, stationId: null });
-  }
+  // Main outbound conveyor along x=39 (flows south), sortation lanes running east at LANE_Z
+  for (let z = MAIN_Z0; z <= MAIN_Z1; z++) grid.block(39, z);
+  for (const z of LANE_Z) for (let x = 40; x <= 42; x++) grid.block(x, z);
 
   const docks: Dock[] = [
     { id: 'DOCK-IN-1', kind: 'inbound', cell: { cx: 0, cz: 9 }, truckId: null, nextArrival: 6 },
     { id: 'DOCK-IN-2', kind: 'inbound', cell: { cx: 0, cz: 21 }, truckId: null, nextArrival: 70 },
-    { id: 'DOCK-OUT-1', kind: 'outbound', cell: { cx: 44, cz: 9 }, truckId: null, nextArrival: 40 },
-    { id: 'DOCK-OUT-2', kind: 'outbound', cell: { cx: 44, cz: 21 }, truckId: null, nextArrival: 130 },
+    { id: 'DOCK-OUT-1', kind: 'outbound', cell: { cx: 44, cz: 21 }, truckId: null, nextArrival: 40 },
+    { id: 'DOCK-OUT-2', kind: 'outbound', cell: { cx: 44, cz: 27 }, truckId: null, nextArrival: 130 },
   ];
 
   const skus: SKU[] = SKU_DEFS.map((d, i) => ({ id: `SKU-${String(i + 1).padStart(2, '0')}`, name: d[0], color: d[1], popularity: d[2], palletQty: d[3] }));

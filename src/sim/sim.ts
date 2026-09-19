@@ -1,4 +1,5 @@
-import { buildLayout, type Layout, RACK_LEVELS } from './layout';
+import { buildLayout, type Layout, RACK_LEVELS, PACK_Z0, MAIN_Z0, MAIN_Z1, LANE_Z, LANE_DOCK, SCANNER_Z } from './layout';
+import { ConveyorNetwork, type Segment } from './conveyor';
 import { Grid } from './grid';
 import { RNG } from './rng';
 import {
@@ -14,6 +15,7 @@ export interface Metrics {
   cycleTimes: number[];       // last N order cycle times
   jobsFailed: number; replans: number;
   utilization: number;        // 0..1 rolling
+  cartonsInducted: number;
 }
 
 export interface SimSnapshot {
@@ -25,6 +27,7 @@ export interface SimSnapshot {
   avgCycleTime: number;
   backlog: number;
   rush: boolean;
+  conveyor: { cartons: number; onMain: number; inLanes: number; blocked: number; throughputPerHour: number; laneFill: { id: string; name: string; n: number; cap: number; status: string; dockId: string }[]; mainStatus: string; inductionsBlocked: number };
 }
 
 const WORKER_NAMES = ['Ava', 'Ben', 'Cleo', 'Dev', 'Eli', 'Fay', 'Gus', 'Hana', 'Ivo', 'Jun', 'Kai', 'Lou', 'Mia', 'Nio'];
@@ -33,7 +36,7 @@ const JOB_PRIORITY: Record<JobType, number> = { LOAD: 90, PACK: 80, PICK: 70, UN
 const ROLE_JOBS: Record<Role, JobType[]> = {
   receiver: ['UNLOAD', 'INSPECT', 'PUTAWAY'], picker: ['PICK', 'TOTE_RETURN'], packer: ['PACK'], shipper: ['LOAD'],
 };
-const ROLE_HOME: Record<Role, Cell> = { receiver: { cx: 5, cz: 15 }, picker: { cx: 31, cz: 15 }, packer: { cx: 38, cz: 16 }, shipper: { cx: 42, cz: 15 } };
+const ROLE_HOME: Record<Role, Cell> = { receiver: { cx: 5, cz: 15 }, picker: { cx: 31, cz: 15 }, packer: { cx: 35, cz: 15 }, shipper: { cx: 43, cz: 18 } };
 
 export class Simulation {
   readonly dt = 0.05;
@@ -53,7 +56,8 @@ export class Simulation {
   readonly workers: Worker[] = [];
   readonly trucks = new Map<string, Truck>();
   readonly log: LogEvent[] = [];
-  readonly metrics: Metrics = { ordersCreated: 0, ordersShipped: 0, ordersDropped: 0, unitsPicked: 0, unitsReceived: 0, palletsReceived: 0, cartonsPacked: 0, trucksIn: 0, trucksOut: 0, shipTimes: [], cycleTimes: [], jobsFailed: 0, replans: 0, utilization: 0 };
+  readonly conveyor: ConveyorNetwork;
+  readonly metrics: Metrics = { ordersCreated: 0, ordersShipped: 0, ordersDropped: 0, unitsPicked: 0, unitsReceived: 0, palletsReceived: 0, cartonsPacked: 0, trucksIn: 0, trucksOut: 0, shipTimes: [], cycleTimes: [], jobsFailed: 0, replans: 0, utilization: 0, cartonsInducted: 0 };
   /** Bumped whenever inventory or container placement changes (renderer dirty flag). */
   version = 0;
   rushActive = false;
@@ -86,6 +90,13 @@ export class Simulation {
     }
     for (const s of this.layout.stations) this.stations.set(s.id, s);
     this.docks = this.layout.docks;
+    this.conveyor = new ConveyorNetwork({
+      get time() { return self.time; }, containers: this.containers,
+      route: (c, lanes) => this.routeCarton(c, lanes),
+      onEvent: (k, t) => this.emit(k, t), bump: () => { this.version++; },
+    });
+    const self = this;
+    this.buildConveyor();
     this.nextRushAt = this.rng.range(150, 260);
     this.nextOrderAt = 4;
     this.createWorkers(opts.workers ?? 12);
@@ -97,6 +108,34 @@ export class Simulation {
     for (let i = 0; i < 5; i++) this.createOrder();
     this.emit('info', 'Shift started. Warehouse online.');
   }
+
+  // ---------------------------------------------------------------- conveyor topology
+  private buildConveyor() {
+    const cv = this.conveyor; const X = 39.5;
+    const main = cv.addSegment({ id: 'MAIN', kind: 'main', name: 'Main sorter line', points: [{ x: X, z: MAIN_Z0 + 0.2 }, { x: X, z: MAIN_Z1 + 0.5 }], speed: 1.3, next: null, cells: Array.from({ length: MAIN_Z1 - MAIN_Z0 + 1 }, (_, i) => ({ cx: 39, cz: MAIN_Z0 + i })) });
+    for (const z0 of PACK_Z0) {
+      const z = z0 + 2 + 0.5;
+      cv.addSegment({ id: `IND-${z0}`, kind: 'induction', name: `Induction ${PACK_Z0.indexOf(z0) + 1}`, points: [{ x: 37.3, z }, { x: 39.0, z }], speed: 1.0, next: { segId: 'MAIN', pos: z - (MAIN_Z0 + 0.2) }, stationId: `PACK-${z0}`, accessCell: { cx: 36, cz: z0 + 2 }, cells: [{ cx: 37, cz: z0 + 2 }, { cx: 38, cz: z0 + 2 }] });
+    }
+    cv.addScanner({ id: 'SCAN-1', segId: 'MAIN', pos: SCANNER_Z + 0.5 - (MAIN_Z0 + 0.2) });
+    LANE_Z.forEach((z, i) => {
+      const laneId = `LANE-${i + 1}`;
+      cv.addSegment({ id: laneId, kind: 'lane', name: `Lane ${i + 1} → ${LANE_DOCK[z].replace('DOCK-', '')}`, points: [{ x: X, z: z + 0.5 }, { x: 40.2, z: z + 0.5 }, { x: 42.6, z: z + 0.5 }], speed: 0.9, next: null, dockId: LANE_DOCK[z], laneNo: i + 1, accessCell: { cx: 43, cz: z }, cells: [40, 41, 42].map(cx => ({ cx, cz: z })) });
+      cv.addDiverter({ id: `DIV-${i + 1}`, segId: 'MAIN', pos: z + 0.5 - (MAIN_Z0 + 0.2), laneId });
+    });
+    void main;
+  }
+  /** Sorter routing: pick the lane serving the order's dock with the most free space. Deterministic; never crosses docks. */
+  private routeCarton(c: Container, lanes: Segment[]): string {
+    const o = c.orderId ? this.orders.get(c.orderId) : null;
+    const dock = o?.dockId ?? this.docks.find(d => d.kind === 'outbound')!.id;
+    const cands = lanes.filter(l => l.dockId === dock);
+    let best = cands[0], br = -1;
+    for (const l of cands) { const r = this.conveyor.laneRoom(l) - (l.cartons.length ? 0 : 0.5) + this.pendingFor(l.id) * -1; if (r > br) { br = r; best = l; } }
+    return best.id;
+  }
+  /** Cartons already routed to a lane but not yet in it (still on the main line). */
+  private pendingFor(laneId: string) { let n = 0; for (const id of this.conveyor.segments.get('MAIN')!.cartons) if (this.containers.get(id)!.convDest === laneId) n++; return n; }
 
   // ---------------------------------------------------------------- setup
   private nid(prefix: string) { const n = (this.ids[prefix] = (this.ids[prefix] ?? 0) + 1); return `${prefix}${n}`; }
@@ -110,7 +149,7 @@ export class Simulation {
       this.workers.push({
         id: this.nid('W'), name: WORKER_NAMES[i % WORKER_NAMES.length], role, x: cell.cx + 0.5, z: cell.cz + 0.5, facing: 0, cell,
         path: [], pathIdx: 0, jobId: null, carrying: null, carryExtra: [], state: 'idle', workTimer: 0, workTotal: 0, workLabel: '',
-        stuckTimer: 0, lastProgressDist: Infinity, lateral: this.rng.range(-0.22, 0.22), speed: 2.4, busyTime: 0, jobsDone: 0, replans: 0, idleSince: 0,
+        stuckTimer: 0, waitTimer: 0, lastProgressDist: Infinity, lateral: this.rng.range(-0.22, 0.22), speed: 2.4, busyTime: 0, jobsDone: 0, replans: 0, idleSince: 0,
       });
     }
   }
@@ -165,6 +204,9 @@ export class Simulation {
     if (this.time >= this.nextDispatchAt) { this.dispatch(); this.nextDispatchAt = this.time + 0.2; }
     let busy = 0;
     for (const w of this.workers) { this.updateWorker(w, dt); if (w.jobId) { busy++; w.busyTime += dt; } }
+    this.conveyor.tick(dt);
+    // orders whose carton entered a lane are staged
+    for (const lane of this.conveyor.lanes) for (const id of lane.cartons) { const o = this.orders.get(this.containers.get(id)!.orderId!); if (o && o.state === 'SORTING') this.setOrderState(o, 'STAGED'); }
     if (this.time >= this.nextSampleAt) { this.nextSampleAt += 20; const s = this.snapshot(); this.history.push({ t: this.time, thr: s.throughputPerHour, backlog: s.backlog, rush: this.rushActive }); if (this.history.length > 90) this.history.shift(); }
     this.metrics.utilization += (busy / this.workers.length - this.metrics.utilization) * Math.min(1, dt / 30);
   }
@@ -187,7 +229,7 @@ export class Simulation {
         } else {
           const elapsed = this.time - tr.dockedAt;
           const full = tr.containerIds.length >= tr.capacity;
-          const staged = this.spotsByKind.get('staging')!.some(s => s.containerIds.length > 0);
+          const staged = this.conveyor.lanes.some(l => l.dockId === tr.dockId && l.cartons.length > 0);
           const timedOut = elapsed > tr.dwell && tr.pending === 0 && (tr.containerIds.length > 0 || (!staged && elapsed > tr.dwell * 1.6));
           if ((full && tr.pending === 0) || timedOut) this.departTruck(tr);
         }
@@ -247,7 +289,7 @@ export class Simulation {
   skuAvailable(skuId: string) { let n = 0; for (const l of this.locsBySku.get(skuId) ?? []) n += l.qty - l.reserved; return n; }
 
   private newContainer(kind: Container['kind'], lines: Container['lines']): Container {
-    const c: Container = { id: this.nid(kind === 'pallet' ? 'P' : kind === 'tote' ? 'T' : 'C'), kind, lines, spotId: null, carriedBy: null, truckId: null, orderId: null, inspected: false, reservedBy: null, createdAt: this.time };
+    const c: Container = { id: this.nid(kind === 'pallet' ? 'P' : kind === 'tote' ? 'T' : 'C'), kind, lines, spotId: null, carriedBy: null, truckId: null, orderId: null, inspected: false, reservedBy: null, createdAt: this.time, convSeg: null, convPos: 0, convDest: null, scannedAt: null };
     this.containers.set(c.id, c); this.version++;
     return c;
   }
@@ -278,7 +320,10 @@ export class Simulation {
       lines.push({ skuId: sku.id, qty: this.rng.weighted([1, 2, 3], q => [55, 30, 15][q - 1]), picked: 0, fromLocations: [] });
     }
     const num = (this.ids['O'] ?? 0) + 1;
-    const o: Order = { id: this.nid('O'), num, customer: this.rng.pick(CUSTOMERS), lines, state: 'NEW', createdAt: this.time, shippedAt: null, toteId: null, cartonId: null, jobId: null, rush: this.rushActive };
+    const customer = this.rng.pick(CUSTOMERS);
+    // carrier route: each customer ships through a fixed outbound dock
+    const dockId = CUSTOMERS.indexOf(customer) % 2 === 0 ? 'DOCK-OUT-1' : 'DOCK-OUT-2';
+    const o: Order = { id: this.nid('O'), num, customer, lines, state: 'NEW', createdAt: this.time, shippedAt: null, toteId: null, cartonId: null, jobId: null, rush: this.rushActive, dockId };
     this.orders.set(o.id, o); this.orderList.push(o); this.metrics.ordersCreated++;
     if (this.orderList.length > 400) { // prune old shipped orders
       const idx = this.orderList.findIndex(x => x.state === 'SHIPPED');
@@ -337,15 +382,18 @@ export class Simulation {
     for (const o of this.orderList) if (o.state === 'ALLOCATED') this.ensureJob(`pick:${o.id}`, () => this.makePickJob(o));
     // PACK: totes in pack_in spots
     for (const kind of ['pack_in', 'pack_bench'] as SpotKind[]) for (const s of this.spotsByKind.get(kind)!) for (const cid of s.containerIds) this.ensureJob(`pack:${cid}`, () => this.makePackJob(this.containers.get(cid)!));
-    // LOAD: cartons in staging while an outbound truck is docked
-    const outTrucks = [...this.trucks.values()].filter(t => t.kind === 'outbound' && t.state === 'docked');
-    if (outTrucks.length) {
-      let room = outTrucks.reduce((a, t) => a + t.capacity - t.containerIds.length - t.pending, 0);
-      for (const t of outTrucks) for (const j of this.jobs.values()) if (j.type === 'LOAD' && j.state === 'open' && j.refs.truckId === undefined) room--; // open load jobs not yet assigned a truck
-      for (const s of this.spotsByKind.get('staging')!) for (const cid of s.containerIds) {
-        if (this.sources.has(`load:${cid}`)) continue;
+    // drop queued LOAD jobs whose truck has gone
+    for (const j of [...this.jobs.values()]) if (j.type === 'LOAD' && j.state === 'open' && j.refs.truckId && this.trucks.get(j.refs.truckId)?.state !== 'docked') { this.jobs.delete(j.id); this.sources.delete(j.sourceKey); }
+    // LOAD: cartons at lane discharge ends while a truck for that dock is docked with room
+    for (const tr of this.trucks.values()) {
+      if (tr.kind !== 'outbound' || tr.state !== 'docked') continue;
+      let room = tr.capacity - tr.containerIds.length - tr.pending;
+      for (const j of this.jobs.values()) if (j.type === 'LOAD' && j.state === 'open' && j.refs.truckId === tr.id) room--;
+      for (const lane of this.conveyor.lanes) {
+        if (lane.dockId !== tr.dockId) continue;
+        const c = this.conveyor.dischargeReady(lane); if (!c || this.sources.has(`load:${c.id}`)) continue;
         if (room <= 0) break;
-        this.ensureJob(`load:${cid}`, () => this.makeLoadJob(this.containers.get(cid)!)); room--;
+        this.ensureJob(`load:${c.id}`, () => this.makeLoadJob(c, lane, tr)); room--;
       }
     }
     // TOTE_RETURN: empties accumulating at pack stations
@@ -570,13 +618,13 @@ export class Simulation {
     return j;
   }
 
-  // ---- PACK
+  // ---- PACK: tote -> bench -> carton -> induction conveyor
   private makePackJob(tote: Container): Job | null {
     const o = tote.orderId ? this.orders.get(tote.orderId) : null;
     if (!o) return null;
     const j = this.baseJob('PACK', `Pack order #${o.num}`, { orderId: o.id, containerId: tote.id });
     if (o.rush) j.priority += 5;
-    let st: Station | null = null; let staging: Spot | null = null; let carton: Container | null = null; let staged = false; let picked = false; let onBench = false;
+    let st: Station | null = null; let carton: Container | null = null; let inducted = false; let picked = false; let onBench = false;
     j.claim = (wid) => {
       const w = this.worker(wid);
       const inSpot = this.spots.get(tote.spotId!)!;
@@ -584,13 +632,10 @@ export class Simulation {
       st = [...this.stations.values()].find(s => s.spotIds.in === inSpot.id || s.spotIds.bench === inSpot.id)!;
       const bench = this.spots.get(st.spotIds.bench!)!;
       if (st.busyWorkerId || (!alreadyOnBench && this.spotRoom(bench) <= 0)) return false;
-      // staging: prefer lanes already partially filled (group cartons), nearest to docks
-      let best: Spot | null = null, bs = Infinity;
-      for (const s of this.spotsByKind.get('staging')!) { if (this.spotRoom(s) <= 0) continue; const sc = dist(s.accessCell, st.accessCell) - (s.containerIds.length > 0 ? 3 : 0); if (sc < bs) { bs = sc; best = s; } }
-      if (!best) return false;
-      staging = best; staging.pending++; st.busyWorkerId = wid; tote.reservedBy = j.id;
+      const ind = this.conveyor.segments.get(st.inductionId!)!;
+      st.busyWorkerId = wid; tote.reservedBy = j.id;
       if (!alreadyOnBench) bench.pending++; else { onBench = true; picked = true; }
-      j.refs.stationId = st.id; j.refs.spotIds = [inSpot.id, bench.id, staging.id];
+      j.refs.stationId = st.id; j.refs.spotIds = [inSpot.id, bench.id]; j.refs.conveyorId = ind.id;
       const outSpot = this.spots.get(st.spotIds.out!)!;
       j.steps = alreadyOnBench ? [this.goto(bench.accessCell, 'Walking to bench', bench.cell), this.work(0.3, 'Resuming pack', () => { if (tote.spotId !== bench.id) return false; this.setOrderState(o, 'PACKING'); })] : [
         this.goto(inSpot.accessCell, 'Walking to pack station', inSpot.cell),
@@ -603,56 +648,58 @@ export class Simulation {
           carton = this.newContainer('carton', tote.lines.map(l => ({ ...l })));
           carton.orderId = o.id; o.cartonId = carton.id;
           tote.lines = []; tote.orderId = null; tote.reservedBy = null;
-          // tote goes to the empties stack
           const bi = bench.containerIds.indexOf(tote.id); if (bi >= 0) bench.containerIds.splice(bi, 1);
           outSpot.containerIds.push(tote.id); tote.spotId = outSpot.id; onBench = false;
           carton.carriedBy = w.id; w.carrying = carton.id;
-          st!.busyWorkerId = null; st!.processed++; this.metrics.cartonsPacked++;
+          st!.processed++; this.metrics.cartonsPacked++;
           this.setOrderState(o, 'PACKED'); this.version++;
         }),
-        this.goto(staging!.accessCell, 'Carrying carton to staging', staging!.cell),
-        this.work(0.6, 'Staging carton', () => { this.dropToSpot(w, carton!, staging!, true); staged = true; this.setOrderState(o, 'STAGED'); }),
+        this.goto(st.inductionAccess!, 'Carrying carton to conveyor', ind.cells[0]),
+        { kind: 'wait', label: 'Waiting for conveyor space', until: () => this.conveyor.entryFree(ind) },
+        this.work(0.5, 'Placing carton on conveyor', () => {
+          if (!this.conveyor.entryFree(ind)) return false;
+          this.conveyor.induct(carton!, ind); w.carrying = null; inducted = true;
+          this.setOrderState(o, 'SORTING'); st!.busyWorkerId = null; this.metrics.cartonsInducted++;
+        }),
       );
       return true;
     };
     j.validate = () => picked || (tote.spotId !== null && (this.spots.get(tote.spotId)!.kind === 'pack_in' || this.spots.get(tote.spotId)!.kind === 'pack_bench'));
     j.release = () => {
-      if (staging && !staged) staging.pending = Math.max(0, staging.pending - 1);
       if (st && st.busyWorkerId === j.workerId) st.busyWorkerId = null;
       if (st && !onBench && !carton) { const b = this.spots.get(st.spotIds.bench!)!; b.pending = Math.max(0, b.pending - 1); }
       tote.reservedBy = null;
-      if (!carton && picked && o.state === 'PACKING') this.setOrderState(o, 'PICKED'); // tote (on bench or in queue) will be re-planned
+      if (!carton && picked && o.state === 'PACKING') this.setOrderState(o, 'PICKED');
+      void inducted;
     };
     return j;
   }
 
-  // ---- LOAD
-  private makeLoadJob(carton: Container): Job | null {
+  // ---- LOAD: carton from a sortation lane end onto the truck for that lane's dock
+  private makeLoadJob(carton: Container, lane: Segment, tr: Truck): Job | null {
     const o = carton.orderId ? this.orders.get(carton.orderId) : null;
     if (!o) return null;
-    const j = this.baseJob('LOAD', `Load order #${o.num} onto truck`, { orderId: o.id, containerId: carton.id });
-    let tr: Truck | null = null; let loaded = false; let picked = false;
+    const j = this.baseJob('LOAD', `Load order #${o.num} from lane ${lane.laneNo}`, { orderId: o.id, containerId: carton.id, conveyorId: lane.id, truckId: tr.id });
+    let loaded = false; let picked = false; let claimed = false;
     j.claim = (wid) => {
       const w = this.worker(wid);
-      const src = this.spots.get(carton.spotId!)!;
-      let best: Truck | null = null, bd = Infinity;
-      for (const t of this.trucks.values()) { if (t.kind !== 'outbound' || t.state !== 'docked' || t.containerIds.length + t.pending >= t.capacity) continue; const d = dist(t.dockCell, src.accessCell); if (d < bd) { bd = d; best = t; } }
-      if (!best) return false;
-      tr = best; tr.pending++; carton.reservedBy = j.id;
-      j.refs.truckId = tr.id; j.refs.spotIds = [src.id];
+      if (tr.state !== 'docked' || tr.containerIds.length + tr.pending >= tr.capacity) return false;
+      if (o.dockId !== tr.dockId || lane.dockId !== tr.dockId) { this.emit('warn', `Routing check refused ${carton.id}: order dock ${o.dockId} vs truck ${tr.dockId}`); return false; }
+      tr.pending++; carton.reservedBy = j.id; claimed = true;
       j.steps = [
-        this.goto(src.accessCell, 'Walking to staging', src.cell),
-        this.work(0.5, 'Lifting carton', () => { if (carton.spotId !== src.id) return false; this.pickupFromSpot(w, carton); picked = true; this.setOrderState(o, 'LOADING'); }),
+        this.goto(lane.accessCell!, `Walking to lane ${lane.laneNo}`, lane.cells[2]),
+        this.work(0.5, 'Lifting carton off lane', () => { if (this.conveyor.dischargeReady(lane)?.id !== carton.id) return false; this.conveyor.remove(carton); carton.carriedBy = w.id; w.carrying = carton.id; picked = true; this.setOrderState(o, 'LOADING'); }),
         this.goto(tr.dockCell, 'Carrying carton to truck', { cx: tr.dockCell.cx + 2, cz: tr.dockCell.cz }),
         this.work(0.8, 'Loading truck', () => {
-          if (tr!.state !== 'docked') return false;
-          tr!.containerIds.push(carton.id); carton.truckId = tr!.id; carton.carriedBy = null; w.carrying = null; tr!.pending--; tr!.loadedCount++; loaded = true; this.version++;
+          if (tr.state !== 'docked') return false;
+          if (o.dockId !== tr.dockId) { this.emit('warn', `Load refused: order #${o.num} routed to ${o.dockId}`); return false; }
+          tr.containerIds.push(carton.id); carton.truckId = tr.id; carton.carriedBy = null; w.carrying = null; tr.pending--; tr.loadedCount++; loaded = true; this.version++;
         }),
       ];
       return true;
     };
-    j.validate = () => (tr === null || tr.state === 'docked') && (picked || carton.spotId !== null);
-    j.release = () => { if (tr && !loaded) tr.pending = Math.max(0, tr.pending - 1); carton.reservedBy = null; if (picked && !loaded) this.setOrderState(o, 'STAGED'); };
+    j.validate = () => tr.state === 'docked' && (picked || this.conveyor.dischargeReady(lane)?.id === carton.id);
+    j.release = () => { if (claimed && !loaded) tr.pending = Math.max(0, tr.pending - 1); carton.reservedBy = null; if (picked && !loaded) this.setOrderState(o, 'PACKED'); };
     return j;
   }
 
@@ -695,7 +742,20 @@ export class Simulation {
       if (c.lines.length) { c.orderId = null; return this.makePutawayJob(c); }
       return this.makeDropJob(w, c, 'tote_shelf');
     }
-    return this.makeDropJob(w, c, 'staging');
+    return this.makeInductJob(w, c);
+  }
+  /** A worker holding a carton (after an abandoned task) walks it to the nearest induction and waits for space. */
+  private makeInductJob(w: Worker, c: Container): Job {
+    const j = this.baseJob('PACK', `Re-induct carton ${c.id}`, { containerId: c.id, orderId: c.orderId ?? undefined });
+    j.claim = () => {
+      let best: Segment | null = null, bd = Infinity;
+      for (const ind of this.conveyor.inductions) { const d = dist(ind.accessCell!, w.cell); if (d < bd) { bd = d; best = ind; } }
+      if (!best) return false; const ind = best; j.refs.conveyorId = ind.id;
+      j.steps = [this.goto(ind.accessCell!, 'Carrying carton to conveyor', ind.cells[0]), { kind: 'wait', label: 'Waiting for conveyor space', until: () => this.conveyor.entryFree(ind) },
+        this.work(0.5, 'Placing carton on conveyor', () => { if (!this.conveyor.entryFree(ind)) return false; this.conveyor.induct(c, ind); w.carrying = null; const o = c.orderId ? this.orders.get(c.orderId) : null; if (o) this.setOrderState(o, 'SORTING'); })];
+      return true;
+    };
+    return j;
   }
   private makeDropJob(w: Worker, c: Container, kind: SpotKind, alt?: SpotKind): Job {
     const j = this.baseJob(c.kind === 'carton' ? 'PACK' : c.kind === 'tote' ? 'TOTE_RETURN' : 'UNLOAD', `Return ${c.kind} ${c.id}`, { containerId: c.id });
@@ -743,7 +803,8 @@ export class Simulation {
   private score(w: Worker, j: Job) {
     const age = this.time - j.createdAt;
     const roleBonus = ROLE_JOBS[w.role].includes(j.type) ? 28 : 0;
-    const target = j.refs.spotIds?.length ? this.spots.get(j.refs.spotIds[0])!.accessCell : j.refs.truckId ? this.trucks.get(j.refs.truckId)!.dockCell : j.refs.orderId ? { cx: 32, cz: 15 } : w.cell;
+    const seg = j.refs.conveyorId ? this.conveyor.segments.get(j.refs.conveyorId) : null;
+    const target = j.refs.spotIds?.length ? this.spots.get(j.refs.spotIds[0])!.accessCell : seg?.accessCell ? seg.accessCell : j.refs.truckId ? (this.trucks.get(j.refs.truckId)?.dockCell ?? w.cell) : j.refs.orderId ? { cx: 32, cz: 15 } : w.cell;
     return j.priority + roleBonus + Math.min(30, age * 0.15) - dist(w.cell, target) * 0.5;
   }
 
@@ -805,6 +866,9 @@ export class Simulation {
         if (ok === false) { this.abandonJob(job, w, 'work step failed'); return; }
         job.stepIdx++;
       }
+    } else if (step.kind === 'wait') {
+      w.state = 'idle'; w.workLabel = step.label; w.waitTimer += dt;
+      if (step.until()) { job.stepIdx++; w.waitTimer = 0; }
     } else {
       const ok = step.fn();
       if (ok === false) { this.abandonJob(job, w, 'action failed'); return; }
@@ -876,7 +940,7 @@ export class Simulation {
     for (const t of ['UNLOAD', 'INSPECT', 'PUTAWAY', 'PICK', 'PACK', 'LOAD', 'TOTE_RETURN'] as JobType[]) jobs[t] = { open: 0, active: 0 };
     for (const j of this.jobs.values()) if (j.state === 'open') jobs[j.type].open++; else if (j.state === 'active') jobs[j.type].active++;
     const orders = {} as SimSnapshot['orders'];
-    for (const s of ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'STAGED', 'LOADING', 'SHIPPED'] as OrderState[]) orders[s] = 0;
+    for (const s of ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'SORTING', 'STAGED', 'LOADING', 'SHIPPED'] as OrderState[]) orders[s] = 0;
     let backlog = 0;
     for (const o of this.orderList) { orders[o.state]++; if (o.state !== 'SHIPPED') backlog++; }
     let onHand = 0, reserved = 0, incoming = 0, used = 0;
@@ -887,12 +951,18 @@ export class Simulation {
     const elapsed = Math.min(win, Math.max(60, this.time));
     const w = { total: this.workers.length, idle: 0, walking: 0, working: 0 };
     for (const wk of this.workers) { if (!wk.jobId) w.idle++; else if (wk.state === 'working') w.working++; else w.walking++; }
+    const cv = this.conveyor; const main = cv.segments.get('MAIN')!;
+    let onMain = main.cartons.length, inLanes = 0, blocked = 0, indBlocked = 0;
+    for (const l of cv.lanes) inLanes += l.cartons.length;
+    for (const sg of cv.segments.values()) if (sg.status === 'BLOCKED') { blocked++; if (sg.kind === 'induction') indBlocked++; }
+    let cartons = onMain + inLanes; for (const ind of cv.inductions) cartons += ind.cartons.length;
     return {
       workers: w, jobs, orders,
       inventory: { onHand, reserved, incoming, inTotes, inCartons, onPallets, onTrucks, locationsUsed: used, locationsTotal: this.racks.size },
       throughputPerHour: n / elapsed * 3600,
       avgCycleTime: this.metrics.cycleTimes.length ? this.metrics.cycleTimes.reduce((a, b) => a + b, 0) / this.metrics.cycleTimes.length : 0,
       backlog, rush: this.rushActive,
+      conveyor: { cartons, onMain, inLanes, blocked, throughputPerHour: cv.throughput(main), laneFill: cv.lanes.map(l => ({ id: l.id, name: l.name, n: l.cartons.length, cap: cv.laneCapacity(l), status: l.status, dockId: l.dockId! })), mainStatus: main.status, inductionsBlocked: indBlocked },
     };
   }
 
@@ -918,7 +988,7 @@ export class Simulation {
     if (totalRes !== expected) errs.push(`reserved total ${totalRes} != unpicked allocated ${expected}`);
     void res;
     for (const c of this.containers.values()) {
-      const places = (c.spotId ? 1 : 0) + (c.carriedBy ? 1 : 0) + (c.truckId ? 1 : 0);
+      const places = (c.spotId ? 1 : 0) + (c.carriedBy ? 1 : 0) + (c.truckId ? 1 : 0) + (c.convSeg ? 1 : 0);
       if (places !== 1) errs.push(`${c.id} in ${places} places`);
       if (c.spotId && !this.spots.get(c.spotId)!.containerIds.includes(c.id)) errs.push(`${c.id} spot mismatch`);
       if (c.carriedBy) { const w = this.worker(c.carriedBy); if (!w || (w.carrying !== c.id && !w.carryExtra.includes(c.id))) errs.push(`${c.id} carriedBy mismatch`); }
@@ -932,9 +1002,12 @@ export class Simulation {
       if (w.stuckTimer > 10) errs.push(`${w.id} stuck ${w.stuckTimer.toFixed(1)}s`);
     }
     for (const j of this.jobs.values()) if (j.state === 'active') { const w = this.worker(j.workerId!); if (!w || w.jobId !== j.id) errs.push(`job ${j.id} active without worker`); }
+    errs.push(...this.conveyor.check());
+    for (const tr of this.trucks.values()) if (tr.kind === 'outbound') for (const cid of tr.containerIds) { const o = this.orders.get(this.containers.get(cid)?.orderId ?? ''); if (o && o.dockId !== tr.dockId) errs.push(`order ${o.id} loaded on wrong dock ${tr.dockId}`); }
+    for (const lane of this.conveyor.lanes) for (const cid of lane.cartons) { const o = this.orders.get(this.containers.get(cid)!.orderId!); if (o && o.dockId !== lane.dockId) errs.push(`order ${o.id} in lane for ${lane.dockId}`); }
     for (const o of this.orderList) {
       if (o.state === 'SHIPPED' && o.lines.some(l => l.picked < l.qty)) errs.push(`order ${o.id} shipped incomplete`);
-      if ((o.state === 'PICKED' || o.state === 'PACKING' || o.state === 'PACKED' || o.state === 'STAGED' || o.state === 'LOADING') && o.lines.some(l => l.picked !== l.qty)) errs.push(`order ${o.id} ${o.state} with wrong picked qty`);
+      if ((o.state === 'PICKED' || o.state === 'PACKING' || o.state === 'PACKED' || o.state === 'SORTING' || o.state === 'STAGED' || o.state === 'LOADING') && o.lines.some(l => l.picked !== l.qty)) errs.push(`order ${o.id} ${o.state} with wrong picked qty`);
     }
     return errs;
   }

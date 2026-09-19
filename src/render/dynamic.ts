@@ -303,9 +303,11 @@ export class DynamicRenderer {
     else if (sel.kind === 'spot') { const s = sim.spots.get(sel.id); if (s) mark(s.cell.cx, s.cell.cz, 0, 1.2, 0xffd23a); }
     else if (sel.kind === 'station') { const st = sim.stations.get(sel.id); if (st) for (const c of st.cells) mark(c.cx, c.cz, 0, 1.2, 0xffd23a); }
     else if (sel.kind === 'truck') { const t = sim.trucks.get(sel.id); if (t) mark(t.dockCell.cx, t.dockCell.cz, 0, 0.15, 0xffd23a); }
+    else if (sel.kind === 'conveyor') { const seg = sim.conveyor.segments.get(sel.id); if (seg) for (const c of seg.cells) mark(c.cx, c.cz, 0, 1.0, 0xffd23a); }
     if (job) {
       for (const id of job.refs.locationIds ?? []) { const l = sim.racks.get(id); if (l) mark(l.cell.cx, l.cell.cz, RACK_BASE + l.level * LEVEL_H, LEVEL_H - 0.1, 0x3faa5c); }
       for (const id of job.refs.spotIds ?? []) { const s = sim.spots.get(id); if (s) mark(s.cell.cx, s.cell.cz, 0, 1.0, 0x9c6ad6); }
+      if (job.refs.conveyorId) { const seg = sim.conveyor.segments.get(job.refs.conveyorId); if (seg) for (const c of seg.cells) mark(c.cx, c.cz, 0, 1.0, 0x9c6ad6); }
     }
     if (worker) {
       const pts: THREE.Vector3[] = [new THREE.Vector3(OX + worker.x, 0.08, OZ + worker.z)];

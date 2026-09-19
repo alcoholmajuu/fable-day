@@ -64,6 +64,7 @@ export function buildWarehouse(layout: Layout, scene: THREE.Scene): StaticPickab
     const t = floorText(z.name, 0.9, '#' + new THREE.Color(z.color).multiplyScalar(0.75).getHexString(), 0.85);
     t.position.set(OX + z.x0 + w / 2, 0.008, OZ + z.z0 + (z.id === 'storage' ? 0.9 : 1.0));
     if (w < 4) { t.rotation.z = Math.PI / 2; t.position.set(OX + z.x0 + w / 2, 0.008, OZ + z.z1 - 2.6); }
+    if (z.id === 'staging') { t.rotation.z = Math.PI / 2; t.position.set(OX + z.x0 + w / 2 + 0.5, 0.008, OZ + z.z0 + 8); }
     g.add(t);
   }
   // aisle centre lines & lane markings inside storage
@@ -86,9 +87,9 @@ export function buildWarehouse(layout: Layout, scene: THREE.Scene): StaticPickab
   const sqMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 });
   const edgeBatches: THREE.BufferGeometry[] = [];
   const addEdges = (w: number, h: number, x: number, z: number) => { const e = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, h)); e.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2)).applyMatrix4(new THREE.Matrix4().makeTranslation(x, 0.006, z)); edgeBatches.push(e); };
-  for (const s of layout.spots) if (s.kind === 'receiving' || s.kind === 'staging') {
+  for (const s of layout.spots) if (s.kind === 'receiving') {
     addEdges(0.9, 0.9, OX + s.cell.cx + 0.5, OZ + s.cell.cz + 0.5);
-    const n = floorText(s.id.split('-')[1], 0.35, '#8a8f99', 0.9); n.position.set(OX + s.cell.cx + 0.5, 0.007, OZ + s.cell.cz + 0.5 + (s.kind === 'receiving' ? 0.75 : -0.75)); g.add(n);
+    const n = floorText(s.id.split('-')[1], 0.35, '#8a8f99', 0.9); n.position.set(OX + s.cell.cx + 0.5, 0.007, OZ + s.cell.cz + 0.5 + 0.75); g.add(n);
   }
 
   // walls (low, so the interior is visible) with dock door openings
@@ -115,6 +116,17 @@ export function buildWarehouse(layout: Layout, scene: THREE.Scene): StaticPickab
       for (const dz of [-1.3, 1.3]) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.5, 0.35), mat(0x1f2226)); b.position.set(x + side * 0.35, 0.3, OZ + d.cell.cz + 0.5 + dz); add(b); }
       const num = floorText(d.id.replace('DOCK-', ''), 0.42, '#3a3f47', 0.85); num.position.set(x - side * 1.4, 0.008, OZ + d.cell.cz + 0.5); num.rotation.z = side < 0 ? Math.PI / 2 : -Math.PI / 2; g.add(num);
     }
+  }
+  // shipping office + empty pallet stacks in the open floor north of the sortation lanes
+  {
+    const desk = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.8), mat(0x8c6a4a)); desk.position.set(OX + 41.5, 0.86, OZ + 6); desk.castShadow = true; add(desk);
+    for (const dx of [-0.7, 0.7]) for (const dz of [-0.3, 0.3]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.82, 0.08), mat(0x8d949c, { metalness: 0.5, roughness: 0.5 })); leg.position.set(OX + 41.5 + dx, 0.41, OZ + 6 + dz); add(leg); }
+    const monitor = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.32, 0.05), mat(0x1c1f24)); monitor.position.set(OX + 41.5, 1.12, OZ + 5.8); add(monitor);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.26, 0.02), mat(0x7fd0ff, { emissive: 0x3aa0ff, emissiveIntensity: 0.5 })); screen.position.set(OX + 41.5, 1.12, OZ + 5.84); add(screen);
+    const chair = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), mat(0x35363b)); chair.position.set(OX + 41.5, 0.35, OZ + 7); add(chair);
+    for (const [px, pz, n] of [[40.5, 10, 6], [41.5, 10, 4], [40.5, 13, 8], [42, 16, 5]] as [number, number, number][]) for (let i = 0; i < n; i++) { const p = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.1, 0.86), mat(0xb08a5a, { roughness: 0.9 })); p.position.set(OX + px, 0.05 + i * 0.12, OZ + pz); p.castShadow = true; add(p); }
+    for (let z = 9; z <= 17; z += 1) addLine(40, z, 42.8, z + 0.6, 0.06); // hatched pallet park
+    const t = floorText('EMPTY PALLETS', 0.32, '#6b7280', 0.9); t.rotation.z = Math.PI / 2; t.position.set(OX + 43.2, 0.008, OZ + 13.5); g.add(t);
   }
   // pillars along the north/south walls for scale
   for (let x = 6; x < GRID_W; x += 8) for (const z of [OZ + 2.4, OZ + 29.6]) { const p = new THREE.Mesh(new THREE.BoxGeometry(0.5, 4.2, 0.5), mat(0xd6dae0)); p.position.set(OX + x, 2.1, z); p.castShadow = true; add(p); }

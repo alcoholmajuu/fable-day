@@ -2,10 +2,10 @@ import type { Simulation } from '../sim/sim';
 import type { Job, Order, OrderState, Worker } from '../sim/types';
 import { JOB_COLORS, ROLE_COLOR, ROLE_NAME } from '../render/dynamic';
 
-export type Selection = { kind: 'worker' | 'rack' | 'spot' | 'station' | 'order' | 'truck'; id: string } | null;
+export type Selection = { kind: 'worker' | 'rack' | 'spot' | 'station' | 'order' | 'truck' | 'conveyor'; id: string } | null;
 
-const STAGE_COLOR: Record<OrderState, string> = { NEW: '#97a0b0', BACKORDER: '#e06060', ALLOCATED: '#8fb4e8', PICKING: '#5cb870', PICKED: '#3f8f55', PACKING: '#e8813a', PACKED: '#c8641f', STAGED: '#9c6ad6', LOADING: '#3fb8c4', SHIPPED: '#e8ecf3' };
-const STAGES: OrderState[] = ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'STAGED', 'LOADING'];
+const STAGE_COLOR: Record<OrderState, string> = { NEW: '#97a0b0', BACKORDER: '#e06060', ALLOCATED: '#8fb4e8', PICKING: '#5cb870', PICKED: '#3f8f55', PACKING: '#e8813a', PACKED: '#c8641f', SORTING: '#b98ae6', STAGED: '#9c6ad6', LOADING: '#3fb8c4', SHIPPED: '#e8ecf3' };
+const STAGES: OrderState[] = ['NEW', 'BACKORDER', 'ALLOCATED', 'PICKING', 'PICKED', 'PACKING', 'PACKED', 'SORTING', 'STAGED', 'LOADING'];
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 const fmtTime = (t: number) => { const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.floor(t % 60); return `${String(6 + h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
 const fmtDur = (t: number) => t >= 60 ? `${Math.floor(t / 60)}m ${Math.floor(t % 60)}s` : `${Math.floor(t)}s`;
@@ -98,6 +98,11 @@ export class HUD {
     this.setText('i-lost', String(sim.metrics.ordersDropped));
     this.setText('i-trucks', `${trucks.filter(t => t.state === 'docked' && t.kind === 'inbound').length} in / ${trucks.filter(t => t.state === 'docked' && t.kind === 'outbound').length} out`);
     this.drawSpark();
+    const cvs = snap.conveyor;
+    this.setText('c-main', `<span style="color:${cvs.mainStatus === 'BLOCKED' ? 'var(--c-warn)' : cvs.mainStatus === 'RUNNING' ? '#9fe0c0' : 'var(--muted)'}">${cvs.mainStatus}</span>${cvs.inductionsBlocked ? ` <span style="color:var(--c-warn)">· ${cvs.inductionsBlocked} induction${cvs.inductionsBlocked > 1 ? 's' : ''} blocked</span>` : ''}`, true);
+    this.setText('c-thr', cvs.throughputPerHour.toFixed(0)); this.setText('c-on', `${cvs.onMain} main · ${cvs.inLanes} in lanes`);
+    const lanesHtml = cvs.laneFill.map(l => `<div class="stage" data-sel="conveyor:${l.id}" style="cursor:pointer"><span class="name">${l.name.split(' →')[0]} <span style="opacity:.6">${l.dockId.replace('DOCK-OUT-', 'D')}</span></span><span class="bar"><i style="width:${(l.n / l.cap * 100).toFixed(0)}%;background:${l.n >= l.cap ? 'var(--c-warn)' : 'var(--c-stage)'}"></i></span><span class="n">${l.n}/${l.cap}</span></div>`).join('');
+    this.setText('lanes', lanesHtml, true);
     this.el('tab-orders')!.classList.toggle('active', this.tab === 'orders'); this.el('tab-workers')!.classList.toggle('active', this.tab === 'workers');
     // lists: rebuilt only when their content signature changes
     let listHtml = '', sig = '';
@@ -145,6 +150,7 @@ export class HUD {
       <div><h3>Throughput · last 30 min</h3><canvas data-id="spark" width="268" height="54" style="width:100%;height:54px;display:block"></canvas><div class="sub" style="display:flex;justify-content:space-between;margin:2px 0 0"><span>orders / hour</span><span data-id="spark-max"></span></div></div>
       <div><h3>Order pipeline</h3><div class="stages">${STAGES.map(s => `<div class="stage"><span class="name">${s}</span><span class="bar"><i data-id="bar-${s}" style="width:0;background:${STAGE_COLOR[s]}"></i></span><span class="n" data-id="n-${s}">0</span></div>`).join('')}</div></div>
       <div><h3>Tasks <span style="font-weight:400;text-transform:none;letter-spacing:0">(active / queued)</span></h3><div class="jobs">${(['UNLOAD', 'INSPECT', 'PUTAWAY', 'PICK', 'PACK', 'LOAD', 'TOTE_RETURN'] as const).map(t => `<div class="job" style="--c:${JOB_COLORS[t]}"><span>${t.replace('_', ' ')}</span><span class="n" data-id="job-${t}">0</span></div>`).join('')}</div></div>
+      <div><h3>Sorter conveyor</h3><div class="rows">${row('c-main', 'Main line')}${row('c-thr', 'Cartons sorted / hour')}${row('c-on', 'Cartons on conveyor')}</div><div class="stages" style="margin-top:4px" data-id="lanes"></div></div>
       <div><h3>Inventory</h3><div class="rows">${row('i-onhand', 'Units on shelf')}${row('i-res', 'Reserved for picks')}${row('i-inb', 'Inbound pallets (units)')}${row('i-inc', 'Putaway in progress')}${row('i-tc', 'In totes / cartons')}${row('i-slots', 'Slots used')}${row('i-pal', 'Pallets received')}${row('i-picked', 'Units picked')}${row('i-trucks', 'Trucks at dock')}${row('i-lost', 'Orders turned away')}</div></div>
       <div><div class="tabs"><button class="btn small" data-id="tab-orders" data-tab="orders">Orders</button><button class="btn small" data-id="tab-workers" data-tab="workers">Workers</button></div><div data-id="list" class="olist"></div></div>`;
   }
@@ -202,8 +208,25 @@ export class HUD {
       if (o.cartonId && sim.containers.has(o.cartonId)) h += `<div class="sub">Carton ${o.cartonId}: ${this.whereIs(o.cartonId)}</div>`;
       if (j) h += `<hr>${this.renderJob(j, j.workerId ? sim.worker(j.workerId) : null)}`;
       else if (o.state === 'BACKORDER') h += `<hr><div class="sub" style="color:var(--c-warn)">Waiting for inbound stock. Purchasing prioritises short SKUs on the next truck.</div>`;
-      else if (o.state === 'STAGED') h += `<hr><div class="sub">Carton staged; will be loaded when an outbound truck is at the dock.</div>`;
+      else if (o.state === 'SORTING') { const c = sim.containers.get(o.cartonId!); h += `<hr><div class="sub">Carton on the sorter conveyor (<span data-sel="conveyor:${c?.convSeg}" style="cursor:pointer;text-decoration:underline">${c?.convSeg}</span>)${c?.convDest ? `, routed to ${c.convDest}` : ', not yet scanned'}. Ships from ${o.dockId}.</div>`; }
+      else if (o.state === 'STAGED') { const c = sim.containers.get(o.cartonId!); h += `<hr><div class="sub">Carton waiting in <span data-sel="conveyor:${c?.convSeg}" style="cursor:pointer;text-decoration:underline">${c?.convSeg}</span>; loads when a truck is at ${o.dockId}.</div>`; }
       else if (o.state === 'LOADING') h += `<hr><div class="sub">On the truck; ships when the truck departs.</div>`;
+      return h;
+    }
+    if (sel.kind === 'conveyor') {
+      const cv = sim.conveyor; const seg = cv.segments.get(sel.id); if (!seg) return '';
+      const util = sim.time > 0 ? ((seg.runTime) / sim.time * 100) : 0; const blockedPct = sim.time > 0 ? seg.blockedTime / sim.time * 100 : 0;
+      const col = seg.status === 'BLOCKED' ? 'var(--c-warn)' : seg.status === 'RUNNING' ? '#9fe0c0' : 'var(--muted)';
+      let h = `${close}<h2>${esc(seg.name)} <span class="chip" style="background:${seg.status === 'BLOCKED' ? '#e06060' : seg.status === 'RUNNING' ? '#5cb870' : '#97a0b0'}">${seg.status}</span></h2>`;
+      h += `<div class="sub">${seg.kind === 'lane' ? 'Accumulation lane' : seg.kind === 'main' ? 'Powered roller sorter line' : 'Pack station takeaway'} · ${seg.length.toFixed(1)} m · ${seg.speed} m/s · <span data-focus="${seg.accessCell ? seg.accessCell.cx + ',' + seg.accessCell.cz : Math.floor(seg.points[0].x) + ',' + Math.round(seg.points[0].z)}" class="btn small">Focus</span></div>`;
+      h += `<div class="rows"><span class="k">Cartons on segment</span><span class="v">${seg.cartons.length}${seg.kind === 'lane' ? ' / ' + cv.laneCapacity(seg) : ''}</span><span class="k">Throughput</span><span class="v">${cv.throughput(seg).toFixed(0)} / h</span><span class="k">Total passed</span><span class="v">${seg.passed}</span><span class="k">Running</span><span class="v">${util.toFixed(0)}%</span><span class="k">Blocked</span><span class="v" style="color:${blockedPct > 10 ? 'var(--c-warn)' : 'inherit'}">${blockedPct.toFixed(0)}%</span>${seg.blockedBy ? `<span class="k">Held up by</span><span class="v" style="color:${col}">${esc(seg.blockedBy)}</span>` : ''}${seg.dockId ? `<span class="k">Destination</span><span class="v">${seg.dockId}</span>` : ''}${seg.next ? `<span class="k">Feeds</span><span class="v"><span data-sel="conveyor:${seg.next.segId}" style="cursor:pointer;text-decoration:underline">${seg.next.segId}</span> at ${seg.next.pos.toFixed(1)} m</span>` : ''}</div>`;
+      if (seg.kind === 'main') {
+        const sc = cv.scanners[0]; h += `<hr><h3>Scanner ${sc.id}</h3><div class="sub">${sc.count} cartons scanned${sc.lastOrder ? ` · last: <span data-sel="order:${sc.lastOrder}" style="cursor:pointer;text-decoration:underline">#${sim.orders.get(sc.lastOrder)?.num ?? '?'}</span>` : ''}</div>`;
+        h += `<h3 style="margin-top:6px">Diverters</h3>${cv.diverters.map(d => { const lane = cv.segments.get(d.laneId)!; return `<div class="stage" data-sel="conveyor:${lane.id}" style="cursor:pointer"><span class="name">${d.id}</span><span class="sub" style="margin:0">→ ${esc(lane.name)} · ${d.count} diverted${d.blockedSince !== null ? ` · <span style="color:var(--c-warn)">holding (lane full)</span>` : ''}</span><span class="n">${lane.cartons.length}/${cv.laneCapacity(lane)}</span></div>`; }).join('')}`;
+      }
+      if (seg.cartons.length) h += `<hr><h3>Cartons (downstream first)</h3>${seg.cartons.map(id => { const c = sim.containers.get(id)!; const o = c.orderId ? sim.orders.get(c.orderId) : null; return `<div class="w" data-sel="order:${o?.id}"><span class="dot" style="background:${c.convDest ? '#9c6ad6' : '#97a0b0'}"></span><span>${c.id}</span><span class="st">${o ? `Order #${o.num} · ${o.dockId.replace('DOCK-', '')}` : 'no order'} · ${c.convPos.toFixed(1)} m${c.convDest ? ' → ' + c.convDest : seg.kind === 'main' ? ' · unscanned' : ''}</span></div>`; }).join('')}`;
+      const jobs = [...sim.jobs.values()].filter(j => j.refs.conveyorId === seg.id);
+      if (jobs.length) h += `<hr><h3>Workers at this segment</h3>${jobs.map(j => `<div class="w" data-sel="${j.workerId ? 'worker:' + j.workerId : 'conveyor:' + seg.id}"><span class="dot" style="background:${JOB_COLORS[j.type]}"></span><span>${j.type}</span><span class="st">${esc(j.summary)}${j.workerId ? ' · ' + sim.worker(j.workerId).name : ' · queued'}</span></div>`).join('')}`;
       return h;
     }
     if (sel.kind === 'truck') {
@@ -219,6 +242,7 @@ export class HUD {
     if (c.carriedBy) return `carried by <span data-sel="worker:${c.carriedBy}" style="cursor:pointer;text-decoration:underline">${this.sim.worker(c.carriedBy).name}</span>`;
     if (c.spotId) return `at <span data-sel="spot:${c.spotId}" style="cursor:pointer;text-decoration:underline">${c.spotId}</span>`;
     if (c.truckId) return `on truck ${c.truckId}`;
+    if (c.convSeg) return `on conveyor <span data-sel="conveyor:${c.convSeg}" style="cursor:pointer;text-decoration:underline">${c.convSeg}</span> at ${c.convPos.toFixed(1)} m`;
     return 'in transit';
   }
   private describeContainer(c: { id: string; kind: string; lines: { skuId: string; qty: number }[]; orderId: string | null; inspected: boolean; carriedBy: string | null }) {
