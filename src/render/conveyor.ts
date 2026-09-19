@@ -54,9 +54,9 @@ export class ConveyorRenderer {
         const stop = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.3, W + 0.1), railMat); stop.position.set(OX + end.x + 0.08, BELT_H + 0.1, OZ + end.z); this.group.add(stop);
         const led = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), this.ledGreen); led.position.set(OX + end.x + 0.08, BELT_H + 0.32, OZ + end.z - W / 2 - 0.06); this.group.add(led); this.laneLeds.set(seg.id, led);
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.9), legMat); post.position.set(OX + end.x + 0.5, 0.95, OZ + end.z - 0.6); this.group.add(post);
-        const sign = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.05), std(0x9c6ad6, { roughness: 0.7, metalness: 0.05 })); sign.position.set(OX + end.x + 0.5, 2.0, OZ + end.z - 0.6); sign.rotation.y = Math.PI / 2; this.group.add(sign);
-        const t = floorText(seg.name.replace('DOCK-', ''), 0.34, '#ffffff', 1); t.rotation.set(0, Math.PI / 2, 0); t.position.set(OX + end.x + 0.5 - 0.03, 2.0, OZ + end.z - 0.6); this.group.add(t);
-        const t2 = floorText(seg.name.replace('DOCK-', ''), 0.34, '#ffffff', 1); t2.rotation.set(0, -Math.PI / 2, 0); t2.position.set(OX + end.x + 0.5 + 0.03, 2.0, OZ + end.z - 0.6); this.group.add(t2);
+        const sign = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.5, 0.05), std(0x9c6ad6, { roughness: 0.7, metalness: 0.05 })); sign.position.set(OX + end.x + 0.5, 2.0, OZ + end.z - 0.6); sign.rotation.y = Math.PI / 2; this.group.add(sign);
+        const t = floorText(seg.name.replace('DOCK-', ''), 0.26, '#ffffff', 1); t.rotation.set(0, Math.PI / 2, 0); t.position.set(OX + end.x + 0.5 - 0.03, 2.0, OZ + end.z - 0.6); this.group.add(t);
+        const t2 = floorText(seg.name.replace('DOCK-', ''), 0.26, '#ffffff', 1); t2.rotation.set(0, -Math.PI / 2, 0); t2.position.set(OX + end.x + 0.5 + 0.03, 2.0, OZ + end.z - 0.6); this.group.add(t2);
       }
       if (seg.kind === 'induction') { // induction: photo-eye LED at the entry
         const p0 = seg.points[0]; const led = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), this.ledGreen); led.position.set(OX + p0.x + 0.1, BELT_H + 0.2, OZ + p0.z - W / 2 - 0.06); this.group.add(led); this.indLeds.set(seg.id, led);

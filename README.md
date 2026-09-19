@@ -2,7 +2,9 @@
 
 A miniature 3D warehouse simulator (Three.js + Vite + TypeScript). Stick-figure workers run a real
 logistics loop: inbound trucks → unload → inspection → putaway → storage → orders → reserve → pick →
-pack → stage → ship. Inventory, orders, jobs, and workers are one consistent state machine.
+pack → conveyor induction → scanner → diverter → outbound lane → ship. Inventory, orders, jobs, workers and
+the conveyor network (`src/sim/conveyor.ts`: segments, merges, scanner, diverters, accumulation lanes with real
+spacing and backpressure) are one consistent state machine.
 
 ```
 npm install
