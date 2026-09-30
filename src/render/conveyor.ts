@@ -14,6 +14,7 @@ export class ConveyorRenderer {
   group = new THREE.Group();
   hits: THREE.Mesh[] = [];
   private rollers!: THREE.InstancedMesh; private rollerSeg: Segment[] = []; private rollerAngle = 0;
+  private rollerPos: Float32Array = new Float32Array(0); private rollerYaw: THREE.Quaternion[] = [];
   private cartons: THREE.InstancedMesh; private tapes: THREE.InstancedMesh; private labelsCache = new Map<string, THREE.Object3D>();
   private diverterArms = new Map<string, THREE.Group>();
   private scannerLight!: THREE.Mesh; private scannerBeam!: THREE.Mesh;
@@ -68,7 +69,12 @@ export class ConveyorRenderer {
     // rollers (instanced, rotate while running)
     const rg = new THREE.CylinderGeometry(0.05, 0.05, W - 0.1, 10); rg.rotateZ(Math.PI / 2);
     this.rollers = new THREE.InstancedMesh(rg, std(0x8e96a3, { roughness: 0.35, metalness: 0.6 }), rollerPositions.length);
-    rollerPositions.forEach((r, i) => { this.rollerSeg.push(r.seg); this.m4.compose(this.v.set(r.x, BELT_H - 0.03, r.z), this.q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), r.ang), this.sc); this.rollers.setMatrixAt(i, this.m4); });
+    this.rollerPos = new Float32Array(rollerPositions.length * 3);
+    rollerPositions.forEach((r, i) => {
+      this.rollerSeg.push(r.seg); this.rollerPos.set([r.x, BELT_H - 0.03, r.z], i * 3);
+      this.rollerYaw.push(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), r.ang));
+      this.m4.compose(this.v.set(r.x, BELT_H - 0.03, r.z), this.rollerYaw[i], this.sc); this.rollers.setMatrixAt(i, this.m4);
+    });
     this.rollers.instanceMatrix.setUsage(THREE.DynamicDrawUsage); this.rollers.castShadow = false; this.rollers.receiveShadow = true; this.group.add(this.rollers);
     // scanner arch over the main line
     const scan = cv.scanners[0]; const main = cv.segments.get(scan.segId)!; const sp = cv.pointAt(main, scan.pos);
@@ -109,11 +115,13 @@ export class ConveyorRenderer {
     // rollers spin on running segments (visual speed follows sim speed; frozen when paused)
     if (simDt > 0) {
       this.rollerAngle += simDt * 6;
-      this.spin.setFromAxisAngle(X_AXIS, simDt * 6);
+      this.spin.setFromAxisAngle(X_AXIS, this.rollerAngle);
       for (let i = 0; i < this.rollerSeg.length; i++) {
         const seg = this.rollerSeg[i]; if (seg.status === 'BLOCKED' && seg.kind !== 'lane') continue;
-        this.rollers.getMatrixAt(i, this.m4); this.m4.decompose(this.v, this.q, this.sc);
-        this.q.multiply(this.spin); this.m4.compose(this.v, this.q, this.sc); this.rollers.setMatrixAt(i, this.m4);
+        // total rotation = yaw (belt direction) * spin (roller axle); positions are fixed
+        this.q.copy(this.rollerYaw[i]).multiply(this.spin);
+        this.m4.compose(this.v.set(this.rollerPos[i * 3], this.rollerPos[i * 3 + 1], this.rollerPos[i * 3 + 2]), this.q, this.sc);
+        this.rollers.setMatrixAt(i, this.m4);
       }
       this.rollers.instanceMatrix.needsUpdate = true;
     }

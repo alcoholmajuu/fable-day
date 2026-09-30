@@ -186,6 +186,7 @@ export class DynamicRenderer {
   private boxes: Pool; private pallets: Pool; private totes: Pool; private cartons: Pool; private toteFills: Pool; private tapes: Pool;
   private badges: Pool;
   private workers = new Map<string, WorkerRig>(); private trucks = new Map<string, TruckRig>();
+  private rigList: WorkerRig[] = [];
   private lastVersion = -1;
   private hl = new THREE.Group(); private pathLine: THREE.Line; private hlBoxes: THREE.Mesh[] = [];
   labelsVisible = true;
@@ -201,8 +202,9 @@ export class DynamicRenderer {
     this.tapes = new Pool(new THREE.BoxGeometry(0.1, 0.43, 0.45), stdMat(0xeadfc4, 0.7), 120, grp, false);
     this.badges = new Pool(new THREE.PlaneGeometry(0.3, 0.3), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }), 200, grp, false);
     scene.add(this.hl);
-    this.pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd23a, linewidth: 2, transparent: true, opacity: 0.95, depthTest: false })); this.pathLine.renderOrder = 20; this.hl.add(this.pathLine);
-    for (const w of sim.workers) this.workers.set(w.id, new WorkerRig(w, grp));
+    this.pathPos = new Float32Array(3 * 128); this.pathGeo.setAttribute('position', new THREE.BufferAttribute(this.pathPos, 3));
+    this.pathLine = new THREE.Line(this.pathGeo, new THREE.LineBasicMaterial({ color: 0xffd23a, linewidth: 2, transparent: true, opacity: 0.95, depthTest: false })); this.pathLine.renderOrder = 20; this.pathLine.frustumCulled = false; this.hl.add(this.pathLine);
+    for (const w of sim.workers) { const rig = new WorkerRig(w, grp); this.workers.set(w.id, rig); this.rigList.push(rig); }
   }
   get workerHits() { return [...this.workers.values()].map(r => r.hit); }
   get truckHits() { return [...this.trucks.values()].map(r => r.hit); }
@@ -210,7 +212,7 @@ export class DynamicRenderer {
   update(dt: number, selected: { kind: string; id: string } | null) {
     const sim = this.sim;
     if (sim.version !== this.lastVersion) { this.rebuildContainers(); this.lastVersion = sim.version; }
-    for (const w of sim.workers) if (!this.workers.has(w.id)) this.workers.set(w.id, new WorkerRig(w, this.scene.getObjectByName('dynamic')!));
+    for (const w of sim.workers) if (!this.workers.has(w.id)) { const rig = new WorkerRig(w, this.scene.getObjectByName('dynamic')!); this.workers.set(w.id, rig); this.rigList.push(rig); }
     this.separate();
     for (const rig of this.workers.values()) rig.update(sim, dt, selected?.kind === 'worker' && selected.id === rig.w.id, this.labelsVisible && this.zoomLevel < 11, Math.max(0.35, this.zoomLevel / 10));
     // trucks
@@ -220,7 +222,7 @@ export class DynamicRenderer {
   }
 
   private separate() {
-    const rigs = [...this.workers.values()];
+    const rigs = this.rigList;
     for (const r of rigs) { r.sepX *= 0.9; r.sepZ *= 0.9; }
     for (let i = 0; i < rigs.length; i++) for (let j = i + 1; j < rigs.length; j++) {
       const a = rigs[i].w, b = rigs[j].w;
@@ -282,6 +284,7 @@ export class DynamicRenderer {
   }
 
   private hlGeo = new THREE.BoxGeometry(1.04, 1, 1.04);
+  private pathGeo = new THREE.BufferGeometry(); private pathPos = new Float32Array(0);
   private hlMats = new Map<number, THREE.MeshBasicMaterial>();
   private hlUsed = 0;
   private updateHighlight(sel: { kind: string; id: string } | null) {
@@ -310,9 +313,16 @@ export class DynamicRenderer {
       if (job.refs.conveyorId) { const seg = sim.conveyor.segments.get(job.refs.conveyorId); if (seg) for (const c of seg.cells) mark(c.cx, c.cz, 0, 1.0, 0x9c6ad6); }
     }
     if (worker) {
-      const pts: THREE.Vector3[] = [new THREE.Vector3(OX + worker.x, 0.08, OZ + worker.z)];
-      for (let i = worker.pathIdx; i < worker.path.length; i++) pts.push(new THREE.Vector3(OX + worker.path[i].cx + 0.5, 0.08, OZ + worker.path[i].cz + 0.5));
-      if (pts.length > 1) { this.pathLine.geometry.dispose(); this.pathLine.geometry = new THREE.BufferGeometry().setFromPoints(pts); this.pathLine.visible = true; }
+      const n = 1 + (worker.path.length - worker.pathIdx);
+      if (n > 1) {
+        if (n * 3 > this.pathPos.length) { this.pathPos = new Float32Array(n * 3 * 2); this.pathGeo.setAttribute('position', new THREE.BufferAttribute(this.pathPos, 3)); }
+        const p = this.pathPos; let i = 0;
+        p[i * 3] = OX + worker.x; p[i * 3 + 1] = 0.08; p[i * 3 + 2] = OZ + worker.z; i++;
+        for (let k = worker.pathIdx; k < worker.path.length; k++) { p[i * 3] = OX + worker.path[k].cx + 0.5; p[i * 3 + 1] = 0.08; p[i * 3 + 2] = OZ + worker.path[k].cz + 0.5; i++; }
+        this.pathGeo.setDrawRange(0, i);
+        (this.pathGeo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        this.pathLine.visible = true;
+      }
       // also mark the current goto target
       const step = job?.steps[job.stepIdx]; if (step?.kind === 'goto') mark(step.cell.cx, step.cell.cz, 0, 0.15, 0xffd23a);
     }

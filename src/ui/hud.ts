@@ -117,7 +117,8 @@ export class HUD {
     if (sig !== this.listSig) { this.listSig = sig; const l = this.el('list')!; l.className = this.tab === 'orders' ? 'olist' : 'wlist'; l.innerHTML = listHtml; }
     // inspector
     const ih = this.selection ? this.renderInspector(this.selection) : '';
-    if (ih !== this.lastInsp) { this.insp.innerHTML = ih; this.lastInsp = ih; this.insp.classList.toggle('show', !!ih); }
+    if (ih !== this.lastInsp) { this.insp.innerHTML = ih; this.lastInsp = ih; }
+    this.insp.classList.toggle('show', !!ih);
     // log
     if (sim.log.length !== this.lastLog || (sim.log.length && sim.log[sim.log.length - 1].t !== this.lastLogT)) {
       this.lastLog = sim.log.length; this.lastLogT = sim.log.length ? sim.log[sim.log.length - 1].t : 0;
