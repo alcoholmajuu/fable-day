@@ -36,7 +36,6 @@ export interface ConveyorHost {
   /** Called when a carton passes the scanner; must return the lane id it should be routed to. */
   route: (carton: Container, lanes: Segment[]) => string;
   onEvent: (kind: 'info' | 'warn', text: string) => void;
-  bump: () => void;
 }
 
 /** Powered conveyor network. Pure simulation: no rendering concerns. */
@@ -44,19 +43,25 @@ export class ConveyorNetwork {
   readonly segments = new Map<string, Segment>();
   readonly diverters: Diverter[] = [];
   readonly scanners: Scanner[] = [];
+  private laneList: Segment[] = [];
+  private inductionList: Segment[] = [];
+  private tickOrder: Segment[] = [];
   misroutes = 0;
   constructor(private host: ConveyorHost) {}
 
   addSegment(s: Omit<Segment, 'cum' | 'length' | 'cartons' | 'status' | 'blockedTime' | 'runTime' | 'passed' | 'passedTimes' | 'blockedBy'>): Segment {
     const cum = [0]; for (let i = 1; i < s.points.length; i++) cum.push(cum[i - 1] + Math.hypot(s.points[i].x - s.points[i - 1].x, s.points[i].z - s.points[i - 1].z));
     const seg: Segment = { ...s, cum, length: cum[cum.length - 1], cartons: [], status: 'STARVED', blockedTime: 0, runTime: 0, passed: 0, passedTimes: [], blockedBy: null };
-    this.segments.set(seg.id, seg); return seg;
+    this.segments.set(seg.id, seg);
+    if (seg.kind === 'lane') this.laneList.push(seg); else if (seg.kind === 'induction') this.inductionList.push(seg);
+    this.tickOrder.push(seg); this.tickOrder.sort((a, b) => rank(a.kind) - rank(b.kind));
+    return seg;
   }
   addDiverter(d: Omit<Diverter, 'activeUntil' | 'count' | 'blockedSince'>) { this.diverters.push({ ...d, activeUntil: -1, count: 0, blockedSince: null }); }
   addScanner(s: Omit<Scanner, 'lastScanAt' | 'count' | 'lastOrder'>) { this.scanners.push({ ...s, lastScanAt: -1, count: 0, lastOrder: null }); }
 
-  get lanes() { return [...this.segments.values()].filter(s => s.kind === 'lane'); }
-  get inductions() { return [...this.segments.values()].filter(s => s.kind === 'induction'); }
+  get lanes() { return this.laneList; }
+  get inductions() { return this.inductionList; }
 
   /** World-space point and heading at a distance along a segment. */
   pointAt(seg: Segment, pos: number, out: { x: number; z: number; ang: number } = { x: 0, z: 0, ang: 0 }) {
@@ -78,7 +83,7 @@ export class ConveyorNetwork {
   /** Put a carton on a segment at its head. Caller must have checked entryFree. */
   induct(c: Container, seg: Segment) {
     c.convSeg = seg.id; c.convPos = 0; c.convDest = null; c.spotId = null; c.carriedBy = null; c.truckId = null;
-    seg.cartons.push(c.id); this.host.bump();
+    seg.cartons.push(c.id);
   }
   /** Carton at the discharge end of a lane, ready to be picked up (front carton only). */
   dischargeReady(lane: Segment): Container | null {
@@ -89,21 +94,20 @@ export class ConveyorNetwork {
   remove(c: Container) {
     const seg = c.convSeg ? this.segments.get(c.convSeg) : null;
     if (seg) { const i = seg.cartons.indexOf(c.id); if (i >= 0) seg.cartons.splice(i, 1); seg.passed++; seg.passedTimes.push(this.host.time); if (seg.passedTimes.length > 200) seg.passedTimes.splice(0, 50); }
-    c.convSeg = null; c.convPos = 0; this.host.bump();
+    c.convSeg = null; c.convPos = 0;
   }
 
   tick(dt: number) {
     const t = this.host.time;
     // downstream first so freed space is usable in the same tick: lanes, main, inductions
-    const order = [...this.segments.values()].sort((a, b) => rank(a.kind) - rank(b.kind));
-    for (const seg of order) this.tickSegment(seg, dt, t);
+    for (const seg of this.tickOrder) this.tickSegment(seg, dt, t);
   }
 
   private tickSegment(seg: Segment, dt: number, t: number) {
     const C = this.host.containers;
     let anyMoved = false, anyBlocked = false; seg.blockedBy = null;
-    // keep sorted downstream-first
-    seg.cartons.sort((a, b) => C.get(b)!.convPos - C.get(a)!.convPos);
+    // cartons stay sorted downstream-first: all move forward by the same speed and each is
+    // clamped by the carton ahead, while insertions (induct/placeOn) keep the array ordered
     for (let i = 0; i < seg.cartons.length; i++) {
       const c = C.get(seg.cartons[i])!;
       const ahead = i > 0 ? C.get(seg.cartons[i - 1])! : null;
@@ -127,7 +131,7 @@ export class ConveyorNetwork {
               seg.cartons.splice(i, 1); i--;
               this.placeOn(lane, c, Math.min(over, CARTON_GAP * 0.5));
               dv.activeUntil = t + 1.1; dv.count++; dv.blockedSince = null; seg.passed++; seg.passedTimes.push(t); if (seg.passedTimes.length > 200) seg.passedTimes.splice(0, 50);
-              anyMoved = true; this.host.bump(); continue;
+              anyMoved = true; continue;
             }
             if (dv.pos < limit) { limit = dv.pos; limitReason = `lane ${lane.laneNo} full`; if (dv.blockedSince === null) dv.blockedSince = t; }
           }
@@ -141,7 +145,7 @@ export class ConveyorNetwork {
             seg.cartons.splice(i, 1); i--;
             this.placeOn(nx, c, seg.next.pos + Math.min(target - seg.length, 0.2));
             seg.passed++; seg.passedTimes.push(t); if (seg.passedTimes.length > 200) seg.passedTimes.splice(0, 50);
-            anyMoved = true; this.host.bump(); continue;
+            anyMoved = true; continue;
           }
           limitReason = 'merge wait';
         } else if (seg.kind === 'lane') limitReason = 'awaiting pickup';
@@ -161,7 +165,6 @@ export class ConveyorNetwork {
     else if (anyMoved && !anyBlocked) { seg.status = 'RUNNING'; seg.runTime += dt; }
     else if (anyBlocked) { seg.status = 'BLOCKED'; seg.blockedTime += dt; }
     else { seg.status = seg.kind === 'lane' ? 'RUNNING' : 'BLOCKED'; if (seg.kind !== 'lane') seg.blockedTime += dt; }
-    if (anyMoved) this.host.bump();
   }
 
   /** Put a carton onto a segment at `pos`, pulled back if needed so it never overlaps the carton ahead. */

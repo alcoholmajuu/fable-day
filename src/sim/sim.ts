@@ -93,7 +93,7 @@ export class Simulation {
     this.conveyor = new ConveyorNetwork({
       get time() { return self.time; }, containers: this.containers,
       route: (c, lanes) => this.routeCarton(c, lanes),
-      onEvent: (k, t) => this.emit(k, t), bump: () => { this.version++; },
+      onEvent: (k, t) => this.emit(k, t),
     });
     const self = this;
     this.buildConveyor();
@@ -146,11 +146,12 @@ export class Simulation {
       const role = roles[i % roles.length];
       const home = ROLE_HOME[role];
       const cell = this.grid.nearestWalkable({ cx: home.cx, cz: home.cz + (i % 3) - 1 });
-      this.workers.push({
+      const w: Worker = {
         id: this.nid('W'), name: WORKER_NAMES[i % WORKER_NAMES.length], role, x: cell.cx + 0.5, z: cell.cz + 0.5, facing: 0, cell,
         path: [], pathIdx: 0, jobId: null, carrying: null, carryExtra: [], state: 'idle', workTimer: 0, workTotal: 0, workLabel: '',
         stuckTimer: 0, waitTimer: 0, lastProgressDist: Infinity, lateral: this.rng.range(-0.22, 0.22), speed: 2.4, busyTime: 0, jobsDone: 0, replans: 0, idleSince: 0,
-      });
+      };
+      this.workers.push(w); this.workerIdx.set(w.id, w);
     }
   }
 
@@ -199,9 +200,8 @@ export class Simulation {
     this.time += dt;
     this.updateTrucks(dt);
     this.updateDemand();
-    this.plan();
     if (this.time >= this.nextAllocAt) { this.allocateOrders(); this.nextAllocAt = this.time + 0.5; }
-    if (this.time >= this.nextDispatchAt) { this.dispatch(); this.nextDispatchAt = this.time + 0.2; }
+    if (this.time >= this.nextDispatchAt) { this.plan(); this.dispatch(); this.nextDispatchAt = this.time + 0.2; }
     let busy = 0;
     for (const w of this.workers) { this.updateWorker(w, dt); if (w.jobId) { busy++; w.busyTime += dt; } }
     this.conveyor.tick(dt);
@@ -219,7 +219,7 @@ export class Simulation {
         this.spawnTruck(d);
       }
     }
-    for (const tr of [...this.trucks.values()]) {
+    for (const tr of this.trucks.values()) {
       if (tr.state === 'arriving') {
         tr.t = Math.min(1, tr.t + dt / 5);
         if (tr.t >= 1) { tr.state = 'docked'; tr.dockedAt = this.time; this.emit(tr.kind === 'inbound' ? 'inbound' : 'info', tr.kind === 'inbound' ? `Truck ${tr.id} docked with ${tr.containerIds.length} pallets` : `Outbound truck ${tr.id} ready at ${tr.dockId}`); }
@@ -414,9 +414,9 @@ export class Simulation {
   private work(duration: number, label: string, then?: () => boolean | void): Step { return { kind: 'work', duration, label, then }; }
 
   private spotRoom(s: Spot) { return s.capacity - s.containerIds.length - s.pending; }
-  private nearestSpot(kind: SpotKind, from: Cell, pred: (s: Spot) => boolean = () => true): Spot | null {
+  private nearestSpot(kind: SpotKind, from: Cell, pred: (s: Spot) => boolean = () => true, need = 1): Spot | null {
     let best: Spot | null = null, bd = Infinity;
-    for (const s of this.spotsByKind.get(kind)!) { if (!pred(s) || this.spotRoom(s) <= 0) continue; const d = dist(s.accessCell, from); if (d < bd) { bd = d; best = s; } }
+    for (const s of this.spotsByKind.get(kind)!) { if (!pred(s) || this.spotRoom(s) < need) continue; const d = dist(s.accessCell, from); if (d < bd) { bd = d; best = s; } }
     return best;
   }
   private pickupFromSpot(w: Worker, c: Container) {
@@ -759,25 +759,28 @@ export class Simulation {
   }
   private makeDropJob(w: Worker, c: Container, kind: SpotKind, alt?: SpotKind): Job {
     const j = this.baseJob(c.kind === 'carton' ? 'PACK' : c.kind === 'tote' ? 'TOTE_RETURN' : 'UNLOAD', `Return ${c.kind} ${c.id}`, { containerId: c.id });
-    let spot: Spot | null = null; let dropped = false;
+    let spot: Spot | null = null; let dropped = false; let need = 1;
     j.claim = () => {
-      spot = this.nearestSpot(kind, w.cell) ?? (alt ? this.nearestSpot(alt, w.cell) : null);
-      if (!spot) return false;
-      spot.pending++;
       const extra = w.carryExtra.slice();
+      need = 1 + extra.length;
+      spot = this.nearestSpot(kind, w.cell, () => true, need) ?? (alt ? this.nearestSpot(alt, w.cell, () => true, need) : null);
+      if (!spot) return false;
+      spot.pending += need;
       j.steps = [this.goto(spot.accessCell, `Returning ${c.kind}`, spot.cell), this.work(0.6, `Setting down ${c.kind}`, () => {
         this.dropToSpot(w, c, spot!, true); dropped = true;
         for (const id of extra) { const e = this.containers.get(id); if (!e) continue; spot!.containerIds.push(id); e.spotId = spot!.id; e.carriedBy = null; }
+        spot!.pending = Math.max(0, spot!.pending - extra.length);
         w.carryExtra = [];
         const o = c.orderId ? this.orders.get(c.orderId) : null; if (o && c.kind === 'carton') this.setOrderState(o, 'STAGED');
       })];
       return true;
     };
-    j.release = () => { if (spot && !dropped) spot.pending = Math.max(0, spot.pending - 1); };
+    j.release = () => { if (spot && !dropped) spot.pending = Math.max(0, spot.pending - need); };
     return j;
   }
 
   // ---------------------------------------------------------------- dispatcher
+  private readonly workerIdx = new Map<string, Worker>();
   private dispatch() {
     const open: Job[] = [];
     for (const j of this.jobs.values()) if (j.state === 'open') open.push(j);
@@ -809,7 +812,7 @@ export class Simulation {
   }
 
   // ---------------------------------------------------------------- workers
-  worker(id: string) { return this.workers.find(w => w.id === id)!; }
+  worker(id: string) { return this.workerIdx.get(id)!; }
 
   private updateWorker(w: Worker, dt: number) {
     const job = w.jobId ? this.jobs.get(w.jobId) : undefined;
@@ -976,17 +979,10 @@ export class Simulation {
       if (l.qty + l.incoming > l.capacity) errs.push(`${l.id} over capacity ${l.qty}+${l.incoming}`);
       if (l.qty > 0 && !l.skuId) errs.push(`${l.id} qty without sku`);
     }
-    // reservations must match allocated/picking orders
-    const res = new Map<string, number>();
-    for (const o of this.orderList) if (o.state === 'ALLOCATED' || o.state === 'PICKING') for (const ln of o.lines) {
-      let unpicked = ln.qty - ln.picked;
-      for (const f of ln.fromLocations) { const take = Math.min(f.qty, unpicked); unpicked -= take; }
-      // fromLocations are consumed in route order, so compare totals per order instead
-    }
+    // reservations must match allocated/picking orders (fromLocations are consumed in route order, so compare totals)
     let totalRes = 0; for (const l of this.racks.values()) totalRes += l.reserved;
     let expected = 0; for (const o of this.orderList) if (o.state === 'ALLOCATED' || o.state === 'PICKING') for (const ln of o.lines) expected += ln.qty - ln.picked;
     if (totalRes !== expected) errs.push(`reserved total ${totalRes} != unpicked allocated ${expected}`);
-    void res;
     for (const c of this.containers.values()) {
       const places = (c.spotId ? 1 : 0) + (c.carriedBy ? 1 : 0) + (c.truckId ? 1 : 0) + (c.convSeg ? 1 : 0);
       if (places !== 1) errs.push(`${c.id} in ${places} places`);

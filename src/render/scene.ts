@@ -20,6 +20,7 @@ export class SceneHost {
   private targetAzimuth = this.azimuth;
   private targetElevation = this.elevation;
   private panVel = new THREE.Vector2();
+  private followTmp = new THREE.Vector3();
   followFn: (() => THREE.Vector3 | null) | null = null;
 
   constructor(readonly canvas: HTMLCanvasElement) {
@@ -72,7 +73,7 @@ export class SceneHost {
     // following someone through the aisles: look down more steeply so racks don't hide them
     const wantElev = this.followFn ? Math.max(this.targetElevation, 1.0) : this.targetElevation;
     this.elevation += (wantElev - this.elevation) * k;
-    if (this.followFn) { const p = this.followFn(); if (p) this.target.lerp(new THREE.Vector3(p.x, 0, p.z), k); }
+    if (this.followFn) { const p = this.followFn(); if (p) this.target.lerp(this.followTmp.set(p.x, 0, p.z), k); }
     if (this.panVel.lengthSq() > 0) {
       const f = this.forwardXZ(), r = this.rightXZ();
       this.target.addScaledVector(r, this.panVel.x * dt * this.zoom * 1.4).addScaledVector(f, this.panVel.y * dt * this.zoom * 1.4);
